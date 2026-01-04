@@ -1,0 +1,9 @@
+pandas
+numpy
+pymysql
+SQLAlchemy
+python-dotenv
+xgboost
+scikit-learn
+joblib
+pyarrow
