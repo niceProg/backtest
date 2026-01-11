@@ -20,20 +20,31 @@ except:
         Binance = "Binance"
 
 
-class XGBoostTradingAlgorithm(QCAlgorithm):
-    """
-    Paper/Live-ready version with customized signals + reminders + server model auto-update.
+# =============================================================================
+# HARDCODED FEATURE LIST - Must match training exactly (17 price features only)
+# =============================================================================
+FEATURES_17 = [
+    'price_open', 'price_high', 'price_low', 'price_close', 'price_volume_usd',
+    'price_close_return_1', 'price_close_return_5', 'price_log_return',
+    'price_rolling_vol_5', 'price_true_range', 'price_close_mean_5',
+    'price_close_std_5', 'price_volume_mean_10', 'price_volume_zscore',
+    'price_volume_change', 'price_wick_upper', 'price_wick_lower',
+    'price_body_size',
+]
 
-    Adds/Improves:
-    - Signal Entry/Exit messages (TP/SL/RR) based on fills (OnOrderEvent)
-    - Reminder signals (1-3 hours) for pre-entry/pre-exit setups
-    - Telegram notify signature fixed (Notify.Telegram(chat_id, message, token))
-    - Model auto-update from YOUR SERVER URLs using version + base64(joblib) (no blocking)
-      * version_url: text (ver=...|trained_until=YYYY-mm-dd HH:MM:SS) or just "ver"
-      * pointer_url (optional): text containing the model_b64_url for that version
-      * model_b64_url: base64 text of .joblib bytes
-      * sha256_url (optional): text sha256 for integrity
-    - Mindset: trade at bar time using the latest READY model (typically trained_until <= bar_time - 1h)
+
+class XGBoostFutures17Algorithm(QCAlgorithm):
+    """
+    Futures Trading Algorithm with XGBoost model (17 Price Features) loaded from API.
+
+    Features:
+    - Server model auto-update with version tracking
+    - Telegram notifications
+    - Reminder signals (1-3 hours pre-entry/exit)
+    - API integration (signals, orders, logs, reminders)
+    - SL/TP management
+    - Risk management with cooldown
+    - Simplified to 17 price-only features (OHLCV-derived)
     """
 
     # =========================================================
@@ -41,35 +52,27 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
     # =========================================================
     def Initialize(self):
         # ===== Training date range from dataset_summary (SERVER) =====
-        # Legacy ObjectStore keys (unused - ObjectStore model/dataset loading removed)
-        self.objectstore_prefix = "yumna"
-        self.model_key = f"{self.objectstore_prefix}/latest_model.joblib"
-        self.dataset_summary_key = f"{self.objectstore_prefix}/dataset_summary.txt"
+        self.model_key = "latest_model_futures17.joblib"
+        self.dataset_summary_key = "dataset_summary_futures17.txt"
 
         # ===== Server API config (MODEL + DATASET SUMMARY) =====
-        # domain: https://namadomain.com
-        # model_version: v1  -> /api/v1/...
         self.domain = "https://api.dragonfortune.ai"
-        self.model_version = "v1"
-        # keep compatibility for existing API calls in this script
+        self.model_version = "futures17"
+        # API endpoint format: /api/{model_version}/latest/...
+        self.model_api_url = f"{self.domain}/api/v1/{self.model_version}/latest/model"
+        self.dataset_summary_api_url = f"{self.domain}/api/v1/{self.model_version}/latest/dataset-summary"
+
+        # keep compatibility
         self.apidomain = self.domain
 
-        # default headers (boleh ditambah Authorization dsb)
+        # default headers
         self.api_headers = {
             "Content-Type": "application/json"
-            # "Authorization": "Bearer xxx"
         }
-
-        # Endpoints (JSON, with base64 fields)
-        self.model_api_url = f"{self.domain}/api/{self.model_version}/futures17/latest/model"
-        self.dataset_summary_api_url = f"{self.domain}/api/{self.model_version}/futures17/latest/dataset-summary"
 
         self.train_start_date = None
         self.train_end_date = None
         self.LoadDatasetSummaryFromServer()
-        if self.train_start_date is None or self.train_end_date is None:
-            self.Debug("[DATASET] Server summary unavailable, trying ObjectStore fallback")
-            self.LoadDatasetSummaryFromObjectStore()
 
         if self.train_start_date and self.train_end_date:
             start_dt = self.train_start_date - timedelta(days=1)
@@ -83,83 +86,61 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         self.SetStartDate(start_dt.year, start_dt.month, start_dt.day)
         self.SetEndDate(end_dt.year, end_dt.month, end_dt.day)
 
-        account_currency = "USDT"
+        # ===== Futures with Leverage =====
+        # Initial cash (margin)
+        self.SetCash(100)
+
+        # Leverage settings (10x for futures)
+        self.leverage = 10
+
+        # Symbol with leverage
         try:
-            self.SetAccountCurrency(account_currency)
-            self.Debug(f"[CASH] Account currency set to {account_currency}")
-        except Exception as e:
-            account_currency = "USD"
-            self.Debug(f"[CASH] SetAccountCurrency(USDT) failed: {e}. Falling back to USD")
+            self.crypto = self.AddCrypto("BTCUSDT", Resolution.Hour, Market.Binance)
+            # Set leverage for futures trading
+            self.Securities[self.crypto.Symbol].SetLeverage(self.leverage)
+        except Exception:
             try:
-                self.SetAccountCurrency(account_currency)
-            except Exception as e2:
-                self.Debug(f"[CASH] SetAccountCurrency(USD) failed: {e2}")
-
-        cash_amount = 10000
-        try:
-            self.SetCash(cash_amount)
-            self.Debug(f"[CASH] SetCash({cash_amount}) applied")
-        except Exception as e:
-            self.Debug(f"[CASH] SetCash({cash_amount}) failed: {e}")
-
-        try:
-            self.SetCash("USDT", cash_amount, 1)
-            self.Debug(f"[CASH] SetCash(USDT, {cash_amount}, 1) applied")
-        except Exception as e:
-            self.Debug(f"[CASH] SetCash(USDT, {cash_amount}, 1) failed: {e}")
-
-        # ===== Symbol (Binance Futures only) =====
-        self.SetBrokerageModel(BrokerageName.BinanceFutures)
-        self.crypto = self.AddCryptoFuture("BTCUSDT", Resolution.Hour, Market.Binance)
+                self.SetBrokerageModel(BrokerageName.Binance)
+                self.crypto = self.AddCrypto("BTCUSDT", Resolution.Hour)
+                self.Securities[self.crypto.Symbol].SetLeverage(self.leverage)
+            except Exception:
+                self.crypto = self.AddCrypto("BTCUSDT", Resolution.Hour)
+                try:
+                    self.Securities[self.crypto.Symbol].SetLeverage(self.leverage)
+                except:
+                    self.Debug("Warning: Could not set leverage")
 
         self.symbol = self.crypto.Symbol
         self.SetBenchmark(self.symbol)
-        try:
-            self.Securities[self.symbol].SetLeverage(10)
-        except Exception:
-            self.Debug("Warning: leverage setting not supported for this symbol")
-        try:
-            self.min_order_quantity = float(self.Securities[self.symbol].SymbolProperties.LotSize)
-        except Exception:
-            self.min_order_quantity = 0.0
 
-        # ===== Feature config =====
-        self.available_features = [
-            "price_open", "price_high", "price_low", "price_close", "price_volume_usd",
-            "price_close_return_1", "price_close_return_5", "price_log_return",
-            "price_rolling_vol_5", "price_true_range", "price_close_mean_5",
-            "price_close_std_5", "price_volume_mean_10", "price_volume_zscore",
-            "price_volume_change", "price_wick_upper", "price_wick_lower",
-            "price_body_size",
-        ]
+        self.Debug(f"[LEVERAGE] Using {self.leverage}x leverage with $100 initial margin")
 
-        # Offline model full feature list (fallback ordering)
-        self.model_features = [
-            "price_open","price_high","price_low","price_close","price_volume_usd",
-            "price_close_return_1","price_close_return_5","price_log_return",
-            "price_rolling_vol_5","price_true_range","price_close_mean_5","price_close_std_5",
-            "price_volume_mean_10","price_volume_zscore","price_volume_change",
-            "price_wick_upper","price_wick_lower","price_body_size",
-        ]
+        # ===== Feature config (17 price features only) =====
+        self.available_features = FEATURES_17
+
+        # Model expects exactly 17 price features
+        self.model_features = FEATURES_17
 
         # ===== Strategy meta =====
-        self.strategy_name = "Metode: Futures Price v4 - DragonFortune"
-        self.strategy_id = 4
+        self.strategy_name = "Metode: Futures17 (17 Price) - DragonFortune"
+        self.strategy_id = 6  # Different ID from futures (90 features)
         self.startup_notified = False
 
         # ===== Model state =====
         self.model = None
         self.model_n_features = None
         self.expected_feature_order = None
-        self._logged_model_missing = False
-        self._logged_predict_error = False
-        self._attempted_objectstore_reload = False
+        self.model_version_hash = None
+
+        # ===== Object Store key for model caching =====
+        self.object_store_key = f"xgboost_model_{self.model_version}"
+        self.cached_model_objectstore_key = f"cached_{self.object_store_key}"
+
         # ===== Server model update config =====
-        # NOTE: domain/model_version + endpoints already set at the top of Initialize()
         self.enable_server_model_update = True
         self.enable_server_model_update_in_backtest = True
 
-        # How often to check model for non-OnData triggers (unused by default)
+        # How often to check model for non-OnData triggers
         self.model_check_interval_minutes = 10
         self.last_model_check_time = None
 
@@ -168,53 +149,52 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         self.current_model_created_at = None
         self.current_model_name = None
 
-        # ===== Early defaults (avoid missing-attr during initial model load) =====
-
-
-        # These may be overwritten later in Initialize()
+        # ===== Early defaults =====
         self.enable_live_notifications = True
-        self.notify_channel = "telegram"  # telegram|webhook|email|sms|debug
+        self.notify_channel = "telegram"
         self.telegram_chat_id = ""
         self.telegram_token = ""
         self.webhook_url = ""
         self.email_to = ""
         self.sms_number = ""
 
-        # Load initial model (server first, then ObjectStore fallback)
+        # Load initial model: Object Store first, then API
         loaded = self.TryInitialModelLoad()
         if not loaded:
             self.Debug("[MODEL] Initial load failed. Strategy will run with model=None until a model is available.")
-        # Model refresh in LIVE will be handled in OnData() each timeframe (per instructions)
-        # so we don't schedule extra checks here.
+
+        # Model refresh in LIVE will be handled in OnData()
         # ===== Rolling window =====
         self.window_size = 60
         self.price_window = deque(maxlen=self.window_size)
 
-        # ===== Trading parameters =====
-        self.prediction_buy_threshold = 0.55
-        self.prediction_sell_threshold = 0.45
-        self.position_size_pct = 0.50
-        self.use_dynamic_thresholds = True
-        self.dynamic_threshold_window = 200
-        self.dynamic_threshold_buy_percentile = 65
-        self.dynamic_threshold_sell_percentile = 35
-        self.dynamic_threshold_min_gap = 0.005
-        self.pred_window = deque(maxlen=self.dynamic_threshold_window)
-        self.current_buy_threshold = self.prediction_buy_threshold
-        self.current_sell_threshold = self.prediction_sell_threshold
+        # ===== Trading parameters (aligned with 3bar label) =====
+        self.prediction_buy_threshold = 0.64  # Match training threshold
+        self.prediction_sell_threshold = 0.45  # Slightly earlier exit
+        self.position_size_pct = 0.80
 
-        # ===== Winrate tuning (patched) =====
-        self.min_hold_bars = 6  # minimum holding bars before prediction-based exit
-        self.pred_smooth_n = 1   # moving average window for prediction smoothing
+        # ===== Entry filters (ALLOW TRADES) =====
+        self.min_prediction_confidence = 0.64  # Match training threshold
+        self.entry_confirmation_bars = 1  # Require 1 bar confirmation
+        self.trade_cooldown_bars = 4  # Wait 4 bars between trades
+        self.max_trades_per_day = 8  # Max trades per day
+        self.max_trades_per_week = 35   # Max trades per week
+
+        # Track trades for limits
+        self.trades_today = 0
+        self.trades_this_week = 0
+        self.last_trade_date = None
+        self.last_trade_week = None
+
+        # ===== Winrate tuning =====
+        self.min_hold_bars = 0
+        self.max_hold_bars = 3  # Exit after 3 bars to match 3bar label
+        self.pred_smooth_n = 1
         self.pred_history = deque(maxlen=self.pred_smooth_n)
 
-        self.stop_loss_pct = 0.08
-        self.take_profit_pct = 0.3
-        self.pred_exit_confirm_bars = 4
-        self.pred_exit_below_count = 0
-        self.fee_rate_per_side = 0.0002
-        self.fee_buffer_mult = 2.0
-        self.min_pred_exit_pnl_pct = self.fee_rate_per_side * 2.0 * self.fee_buffer_mult
+        # SL/TP - Align with 3bar TP/SL labels
+        self.stop_loss_pct = 0.003  # 0.3%
+        self.take_profit_pct = 0.003  # 0.3%
 
         # Entry/Exit tracking
         self.entry_price = None
@@ -223,21 +203,33 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         # Pending order guards
         self.pending_entry = False
         self.pending_exit = False
-        self.last_exit_reason = None  # "TP" | "SL" | "PRED" | "RISK"
+        self.last_exit_reason = None
 
-        # ===== Risk management =====
-        self.max_drawdown_pct = 0.20
+        # ===== Risk management (OPTIMIZED) =====
+        self.max_drawdown_pct = 0.10  # 10% (reduced from 20% for less DD)
         self.high_watermark = self.Portfolio.TotalPortfolioValue
-        self.cooldown_period = timedelta(days=7)
+        self.cooldown_period = timedelta(days=7)  # Increased from 7 days
         self.trading_paused_until = None
+        self.max_consecutive_losses = 3  # Stop after 3 losses (was: 5)
+        self.consecutive_losses = 0
 
         # Prevent same-bar re-entry
         self.last_trade_bar_time = None
+        self.bars_since_last_trade = 0
+
+        # ===== Volatility filters =====
+        self.min_volatility_threshold = 0.003  # Min 0.3% volatility to trade
+        self.max_volatility_threshold = 0.10  # Max 10% volatility (avoid chaos)
+        self.atr_period = 7
+
+        # ===== Margin & Leverage Tracking =====
+        self.initial_margin = 100  # Initial cash/margin
+        self.max_position_size_usd = self.initial_margin * self.leverage  # Max position size with leverage
+        self.max_margin_used = 0  # Track max margin used
 
         # ===== Notifications =====
-        # For safety, consider moving secrets to project parameters.
         self.enable_live_notifications = True
-        self.notify_channel = "Telegram"  # "Debug" | "Telegram" | "Webhook" | "Email" | "Sms"
+        self.notify_channel = "Telegram"
         self.telegram_token = "8306719491:AAHNS7HT-pjMUGlcXMA_5SEffd6zPd2X6U0"
         self.telegram_chat_id = "-4978819951"
         self.webhook_url = ""
@@ -245,23 +237,22 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         self.sms_number = ""
 
         # ===== Reminder Signals (pre-entry/exit) =====
-        # With Resolution.Hour data, reminders are naturally in 1h steps.
         self.enable_reminders = True
         self.reminder_min_hours = 1
         self.reminder_max_hours = 3
 
         # Anti-spam gap per reminder type
         self.reminder_min_gap = timedelta(hours=2)
-        self.last_reminder_sent_time = {}  # type -> datetime
+        self.last_reminder_sent_time = {}
 
-        # Active reminders keyed by name (REM_ENTRY / REM_EXIT_TP / ...)
-        self.reminders = {}  # key -> dict(due, hours, tipe, reason)
+        # Active reminders keyed by name
+        self.reminders = {}
 
         # Threshold bands for arming reminders
-        self.entry_pred_band = 0.03   # arm when pred >= buy_th - band (but < buy_th)
-        self.exit_pred_band = 0.03    # arm when pred <= sell_th + band (but > sell_th)
+        self.entry_pred_band = 0.03
+        self.exit_pred_band = 0.03
 
-        # TP/SL progress levels for arming reminders
+        # TP/SL progress levels
         self.near_level_1h = 0.90
         self.near_level_2h = 0.80
         self.near_level_3h = 0.70
@@ -271,25 +262,21 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
 
         # Last seen price for logging
         self.last_price = None
-        # OnData logging helpers
-        self._reminder_fired_info = None  # (tipe, hours, reason)
+        self._reminder_fired_info = None
         self._last_ondata_status = None
         self._last_ondata_reason = None
-
         self._last_submit_signal_bar = None
-        self._last_submit_signal_kind = None  # "ENTRY" / "EXIT"
+        self._last_submit_signal_kind = None
 
         self.pred_debug_counter = 0
-        self.Debug("XGBoostTradingAlgorithm (server model update) initialized")
+        self.Debug("XGBoostFutures17Algorithm initialized (17 price features)")
 
     # =========================================================
     # STARTUP NOTIFY
     # =========================================================
     def OnWarmupFinished(self):
-        # Called once after WarmUp finishes
         if not self.LiveMode:
             return
-
         self.SendStartupMessage()
 
     def SendStartupMessage(self):
@@ -302,11 +289,11 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             f"{self.strategy_name} is start running\n"
             f"symbol={self.symbol}\n"
             f"resolution=Hour\n"
+            f"features=17 price features\n"
             f"time={self.Time}"
         )
-        
-        self.sendAPI("/logs", {"id_method":self.strategy_id, "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"), "message": msg})
 
+        self.sendAPI("/logs", {"id_method": self.strategy_id, "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"), "message": msg})
         self.SendSignal("START", msg)
         self.startup_notified = True
 
@@ -314,11 +301,6 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
     # NOTIFICATION UTILITIES
     # =========================================================
     def SendSignal(self, title: str, message: str):
-        """
-        Custom signal dispatcher.
-        - Always Debug() for visibility.
-        - Optionally Notify.* in live/paper if enabled.
-        """
         safe_title = str(title)[:120]
         safe_message = str(message)
 
@@ -336,7 +318,6 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                 chat_id = str(getattr(self, "telegram_chat_id", "")).strip()
                 token = str(getattr(self, "telegram_token", "")).strip()
                 if chat_id and token:
-                    # Correct signature: Telegram(chat_id, message, token)
                     self.Notify.Telegram(chat_id, f"{safe_title}\n{safe_message}", token)
                 else:
                     self.Debug("[SIGNAL] Telegram not configured (missing chat_id/token)")
@@ -354,8 +335,6 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
     # SERVER MODEL UPDATE (URL)
     # =========================================================
     def ScheduledModelCheck(self):
-        # periodic check
-        # PATCH: if backtest server updates are enabled, only load once at init (no periodic refresh)
         if (not self.LiveMode) and self.enable_server_model_update_in_backtest:
             return
         self.MaybeRefreshModelFromServer(force=True)
@@ -367,9 +346,7 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             s = self.Download(url)
             if s is None:
                 return None
-
-            
-            self.Debug(f"[MODEL] Downloaded Succesfully, url={url}")
+            self.Debug(f"[MODEL] Downloaded Successfully, url={url}")
             return str(s).strip()
         except Exception as e:
             self.Debug(f"[MODEL] Download failed url={url} err={e}")
@@ -381,155 +358,57 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         try:
             s = self.Download(url, headers=self.api_headers)
             if s is None:
-                self.Debug(f"[HTTP] Empty response url={url}")
                 return None
             txt = str(s).strip()
             if not txt:
-                self.Debug(f"[HTTP] Empty response url={url}")
                 return None
             return json.loads(txt)
         except Exception as e:
             self.Debug(f"[HTTP] JSON download failed url={url} err={e}")
             return None
 
-    def _save_objectstore_bytes(self, key: str, data: bytes, label: str):
-        """Save bytes to ObjectStore with logging and retry."""
-        try:
-            size = len(data) if data is not None else 0
-            saved = self.ObjectStore.SaveBytes(key, data)
-            if saved:
-                self.Debug(f"[OBJECTSTORE] Saved {label}: key={key} size={size}")
-                return True
-            self.Debug(f"[OBJECTSTORE] Save returned False for {label}: key={key} size={size}")
-            # Retry by deleting existing key if any
-            if self.ObjectStore.ContainsKey(key):
-                self.ObjectStore.Delete(key)
-                saved = self.ObjectStore.SaveBytes(key, data)
-                if saved:
-                    self.Debug(f"[OBJECTSTORE] Saved after delete {label}: key={key} size={size}")
-                    return True
-            self.Debug(f"[OBJECTSTORE] Save failed for {label}: key={key} size={size}")
-            return False
-        except Exception as e:
-            self.Debug(f"[OBJECTSTORE] Save error for {label}: key={key} err={e}")
-            return False
-
-    def _parse_version_text(self, text: str):
-        """
-        Supports:
-          - "ver=...|trained_until=YYYY-mm-dd HH:MM:SS"
-          - "trained_until=...|ver=..."
-          - just "some_version_string"
-        Returns (ver, trained_until_dt or None)
-        """
-        if text is None:
-            return None, None
-        t = text.strip()
-        if not t:
-            return None, None
-
-        ver = None
-        trained_until = None
-
-        if "|" in t or "ver=" in t or "trained_until=" in t:
-            parts = [p.strip() for p in t.split("|") if p.strip()]
-            for p in parts:
-                if p.lower().startswith("ver="):
-                    ver = p.split("=", 1)[1].strip()
-                elif p.lower().startswith("trained_until="):
-                    raw = p.split("=", 1)[1].strip()
-                    try:
-                        trained_until = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
-                    except Exception:
-                        trained_until = None
-        else:
-            ver = t
-
-        return ver, trained_until
-
-    def _is_model_eligible_for_bar(self, trained_until: datetime, bar_time: datetime) -> bool:
-        """
-        "t-1" policy: for bar at time T, accept trained_until <= T - 1 hour.
-        If trained_until is None:
-          - if require_trained_until_for_gate: reject
-          - else accept (version change triggers reload).
-        """
-        if trained_until is None:
-            return not self.require_trained_until_for_gate
-
-        try:
-            return trained_until <= (bar_time - timedelta(hours=1))
-        except Exception:
-            return False
-
-    def _load_model_from_bytes(self, raw_bytes: bytes):
-        """
-        Save bytes to ObjectStore then joblib.load from file path.
-        """
-        self.ObjectStore.SaveBytes(self.cached_model_objectstore_key, raw_bytes)
-        path = self.ObjectStore.GetFilePath(self.cached_model_objectstore_key)
-        return self._load_model_from_file_path(path)
-
-    def _load_model_from_file_path(self, file_path: str):
-        """
-        Load joblib model and infer feature metadata.
-        """
-        self.model = joblib.load(file_path)
-        self.Debug("[MODEL] Loaded XGBoost model")
-
-        self.model_n_features = None
-        self.expected_feature_order = None
-
-        try:
-            if hasattr(self.model, "n_features_in_"):
-                self.model_n_features = int(self.model.n_features_in_)
-
-            booster = self.model.get_booster() if hasattr(self.model, "get_booster") else None
-            if booster is not None and getattr(booster, "feature_names", None):
-                self.expected_feature_order = list(booster.feature_names)
-                self.model_n_features = len(self.expected_feature_order)
-        except Exception as inner:
-            self.Debug(f"[MODEL] Could not infer feature metadata: {inner}")
-
-        if self.expected_feature_order is None:
-            self.expected_feature_order = list(self.model_features)
-
-        if self.model_n_features is None:
-            self.model_n_features = len(self.expected_feature_order)
-
-        self.Debug(f"[MODEL] Expects {self.model_n_features} features; order_len={len(self.expected_feature_order)}")
-        return True
-
     def _load_model_from_bytes(self, model_bytes: bytes, api_feature_names=None) -> bool:
         """Load joblib model from in-memory bytes and infer feature metadata."""
         try:
             self.model = joblib.load(BytesIO(model_bytes))
-            self.Debug("[MODEL] Loaded XGBoost model (bytes)")
+            self.Debug("[MODEL] Loaded XGBoost model (bytes) - 17 price features")
 
             self.model_n_features = None
             self.expected_feature_order = None
 
-            # Prefer API-provided feature names when available (non-empty)
+            # Prefer API-provided feature names when available
             if api_feature_names and isinstance(api_feature_names, list) and len(api_feature_names) > 0:
                 self.expected_feature_order = list(api_feature_names)
                 self.model_n_features = len(self.expected_feature_order)
+            else:
+                # Try to get from model itself
+                try:
+                    if hasattr(self.model, "n_features_in_"):
+                        self.model_n_features = int(self.model.n_features_in_)
 
-            try:
-                if hasattr(self.model, "n_features_in_"):
-                    self.model_n_features = int(self.model.n_features_in_)
-
-                booster = self.model.get_booster() if hasattr(self.model, "get_booster") else None
-                if booster is not None and getattr(booster, "feature_names", None):
-                    self.expected_feature_order = list(booster.feature_names)
-                    self.model_n_features = len(self.expected_feature_order)
-            except Exception as inner:
-                self.Debug(f"[MODEL] Could not infer feature metadata: {inner}")
+                    booster = self.model.get_booster() if hasattr(self.model, "get_booster") else None
+                    if booster is not None and getattr(booster, "feature_names", None):
+                        self.expected_feature_order = list(booster.feature_names)
+                        self.model_n_features = len(self.expected_feature_order)
+                except Exception as inner:
+                    self.Debug(f"[MODEL] Could not infer feature metadata: {inner}")
 
             if self.expected_feature_order is None:
                 self.expected_feature_order = list(self.model_features)
 
             if self.model_n_features is None:
                 self.model_n_features = len(self.expected_feature_order)
+
+            # Verify feature count is 17
+            if self.model_n_features != 17:
+                self.Debug(f"[MODEL] Warning: Expected 17 features, got {self.model_n_features}")
+
+            # Generate hash for version tracking (simplified)
+            try:
+                # Use model_version from API or generate simple hash
+                self.model_version_hash = str(hash(len(model_bytes)))
+            except Exception:
+                self.model_version_hash = "unknown"
 
             self.Debug(f"[MODEL] Expects {self.model_n_features} features; order_len={len(self.expected_feature_order)}")
             return True
@@ -541,46 +420,49 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             return False
 
     def TryInitialModelLoad(self) -> bool:
-        # Server-only (no ObjectStore model load)
+        # Try Object Store first
+        try:
+            if self.ObjectStore.ContainsKey(self.object_store_key):
+                self.Debug(f"Found model in Object Store: {self.object_store_key}")
+                model_bytes = self.ObjectStore.ReadBytes(self.object_store_key)
+                if model_bytes and len(model_bytes) > 0:
+                    if self._load_model_from_bytes(model_bytes):
+                        self.Debug("[MODEL] Loaded from Object Store successfully")
+                        return True
+        except Exception as e:
+            self.Debug(f"[MODEL] Object Store load failed: {e}")
+
+        # Fall back to server
         if not self.enable_server_model_update:
             return False
 
         ok = self.MaybeRefreshModelFromServer(force=True, allow_gate_bypass=True)
-        if ok:
-            return True
-
-        self.Debug("[MODEL] Server load failed, trying ObjectStore fallback")
-        return bool(self.LoadModelFromObjectStore())
+        return bool(ok)
 
     def MaybeRefreshModelFromServer(self, force=False, allow_gate_bypass=False):
         """
-        Load model/joblib from server JSON API (base64).
-        - Backtest: allowed only when enable_server_model_update_in_backtest=True, and should be called once at init.
-        - Live: can be called every OnData() timeframe; will reload only when model_version changes.
+        Load model from server JSON API (base64).
+        - Backtest: only when enable_server_model_update_in_backtest=True
+        - Live: can be called every OnData(); reloads only when model_version changes
         """
-        # Backtest safety
         if (not self.LiveMode) and (not self.enable_server_model_update_in_backtest):
             return False
         if not self.enable_server_model_update:
             return False
 
-        # Throttle for non-forced checks (OnData can call with force=True)
+        # Throttle for non-forced checks
         if not force and self.last_model_check_time is not None:
             if self.Time < self.last_model_check_time + timedelta(minutes=int(self.model_check_interval_minutes)):
                 return False
         self.last_model_check_time = self.Time
 
         j = self._download_json(self.model_api_url)
-        if not j:
-            self.Debug(f"[MODEL] No response from server url={self.model_api_url}")
-            return False
-        if not j.get("success"):
-            self.Debug(f"[MODEL] Server response success=false url={self.model_api_url} payload={j}")
+        if not j or not j.get("success"):
             return False
 
-        ver = str(j.get("model_version") or "").strip()
+        ver = str(j.get("model_version") or j.get("model_hash") or "").strip()
         if not ver:
-            return False
+            ver = str(hash(j.get("model_data_base64", "")[:1000]))
 
         # No change
         if self.current_model_version == ver and self.model is not None:
@@ -597,8 +479,6 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             self.Error(f"[MODEL] base64 decode failed: {e}")
             return False
 
-        self._save_objectstore_bytes(self.model_key, model_bytes, "model")
-
         api_feature_names = j.get("feature_names") or []
         ok = self._load_model_from_bytes(model_bytes, api_feature_names)
         if not ok:
@@ -608,7 +488,14 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         self.current_model_created_at = j.get("created_at")
         self.current_model_name = j.get("model_name")
 
-        # Keep dataset_summary in sync (fills self.train_start_date / self.train_end_date)
+        # Save to Object Store for next time
+        try:
+            self.ObjectStore.SaveBytes(self.object_store_key, model_bytes)
+            self.Debug(f"[MODEL] Saved to Object Store: {self.object_store_key}")
+        except Exception as e:
+            self.Debug(f"[MODEL] Failed to save to Object Store: {e}")
+
+        # Keep dataset_summary in sync
         try:
             self.LoadDatasetSummaryFromServer()
         except Exception as e:
@@ -623,11 +510,7 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         """Load dataset_summary from server API (base64), fill self.train_start_date/self.train_end_date."""
         try:
             j = self._download_json(self.dataset_summary_api_url)
-            if not j:
-                self.Debug(f"[DATASET] No response from server url={self.dataset_summary_api_url}")
-                return
-            if not j.get("success"):
-                self.Debug(f"[DATASET] Server response success=false url={self.dataset_summary_api_url} payload={j}")
+            if not j or not j.get("success"):
                 return
 
             b64 = j.get("summary_data_base64")
@@ -641,99 +524,93 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                 self.Error(f"[DATASET] base64 decode failed: {e}")
                 return
 
-            self._save_objectstore_bytes(
-                self.dataset_summary_key,
-                raw.encode("utf-8"),
-                "dataset_summary"
-            )
+            # Try multiple patterns for parsing time range
+            m = None
+            patterns = [
+                r"Time range:\s*(.+?)\s*to\s*(.+)",  # "Time range: YYYY-MM-DD ... to YYYY-MM-DD ..."
+                r"-\s*Start:\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})",  # "- Start: YYYY-MM-DD HH:MM:SS"
+                r"Start:\s*([0-9]{4}-[0-9]{2}-[0-9]{2}[^0-9]*[0-9]{2}:[0-9]{2}:[0-9]{2})",  # "Start: YYYY-MM-DD HH:MM:SS"
+                r"train_start[\"']:\s*[\"']([0-9]{4}-[0-9]{2}-[0-9]{2})",  # JSON format: "train_start":"YYYY-MM-DD"
+            ]
 
-            # Parse:
-            # - Start: YYYY-mm-dd HH:MM:SS (...)
-            # - End:   YYYY-mm-dd HH:MM:SS (...)
-            m_start = re.search(r"^\s*-\s*Start:\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})", raw, re.MULTILINE)
-            m_end = re.search(r"^\s*-\s*End:\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})", raw, re.MULTILINE)
-            if not m_start or not m_end:
-                self.Error("[DATASET] Could not parse Start/End in dataset_summary")
+            for pattern in patterns:
+                m = re.search(pattern, raw, re.MULTILINE | re.IGNORECASE)
+                if m:
+                    break
+
+            if not m:
+                self.Debug(f"[DATASET] Could not parse time range from dataset_summary. Raw content preview: {raw[:500]}...")
                 return
 
-            dt_format = "%Y-%m-%d %H:%M:%S"
-            start_raw = m_start.group(1).strip()
-            end_raw = m_end.group(1).strip()
+            # Extract start date
+            start_raw = m.group(1).strip()
 
-            start_dt = datetime.strptime(start_raw, dt_format)
-            end_dt = datetime.strptime(end_raw, dt_format)
+            # Extract end date if available, otherwise calculate from API response
+            end_raw = None
+            if m.lastindex >= 2:
+                end_raw = m.group(2).strip()
 
-            # Keep same behavior as existing script: store day-level dates
+            # Try multiple datetime formats
+            dt_formats = [
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d",
+                "%Y/%m/%d %H:%M:%S",
+                "%Y/%m/%d",
+            ]
+
+            start_dt = None
+            end_dt = None
+
+            # Parse start date - try each format
+            for fmt in dt_formats:
+                try:
+                    start_dt = datetime.strptime(start_raw, fmt)
+                    break
+                except Exception:
+                    continue
+
+            # Parse end date if available
+            if end_raw:
+                for fmt in dt_formats:
+                    try:
+                        end_dt = datetime.strptime(end_raw, fmt)
+                        break
+                    except Exception:
+                        continue
+
+            if not start_dt:
+                self.Debug(f"[DATASET] Could not parse start date from: {start_raw}")
+                return
+
+            # If no end date found, use API created_at or default
+            if not end_dt:
+                api_created = j.get("created_at")
+                if api_created:
+                    try:
+                        end_dt = datetime.strptime(api_created.split()[0], "%Y-%m-%d")
+                    except:
+                        end_dt = datetime.now()
+                else:
+                    end_dt = datetime.now()
+
             self.train_start_date = datetime(start_dt.year, start_dt.month, start_dt.day)
             self.train_end_date = datetime(end_dt.year, end_dt.month, end_dt.day)
 
             sid = j.get("session_id")
             created_at = j.get("created_at")
             if sid:
-                self.Debug(f"[DATASET] Loaded dataset_summary session_id={sid} created_at={created_at} start_date={start_dt} end_date={end_dt}")
+                self.Debug(f"[DATASET] Loaded dataset_summary session_id={sid} created_at={created_at} range={self.train_start_date} to {self.train_end_date}")
+
         except Exception as e:
-            self.Error(f"[DATASET] LoadDatasetSummaryFromServer error: {e}")
+            self.Debug(f"[DATASET] LoadDatasetSummaryFromServer error: {e} - Using fallback dates")
             self.train_start_date = None
             self.train_end_date = None
 
     # =========================================================
-    # LOAD DATASET SUMMARY
-    # =========================================================
-    def LoadDatasetSummaryFromObjectStore(self) -> bool:
-        try:
-            if not self.ObjectStore.ContainsKey(self.dataset_summary_key):
-                self.Debug(f"dataset_summary not found: {self.dataset_summary_key}")
-                return False
-
-            file_path = self.ObjectStore.GetFilePath(self.dataset_summary_key)
-            with open(file_path, "r") as f:
-                text = f.read()
-
-            m = re.search(r"Time range:\s*(.+?)\s*to\s*(.+)", text)
-            if not m:
-                self.Error("Could not parse 'Time range: ... to ...' in dataset_summary.txt")
-                return
-
-            start_raw = m.group(1).strip()
-            end_raw = m.group(2).strip()
-            dt_format = "%Y-%m-%d %H:%M:%S"
-            start_dt = datetime.strptime(start_raw, dt_format)
-            end_dt = datetime.strptime(end_raw, dt_format)
-
-            self.train_start_date = datetime(start_dt.year, start_dt.month, start_dt.day)
-            self.train_end_date = datetime(end_dt.year, end_dt.month, end_dt.day)
-            return True
-        except Exception as e:
-            self.Error(f"Error parsing dataset_summary.txt: {e}")
-            self.train_start_date = None
-            self.train_end_date = None
-            return False
-
-    # =========================================================
-    # LOAD MODEL (OBJECTSTORE FALLBACK)
-    # =========================================================
-    def LoadModelFromObjectStore(self) -> bool:
-        try:
-            if not self.ObjectStore.ContainsKey(self.model_key):
-                self.Error(f"ObjectStore key not found: {self.model_key}")
-                return False
-
-            file_path = self.ObjectStore.GetFilePath(self.model_key)
-            self._load_model_from_file_path(file_path)
-            return self.model is not None
-        except Exception as e:
-            self.Error(f"Error loading model from ObjectStore: {e}")
-            self.model = None
-            self.model_n_features = None
-            self.expected_feature_order = None
-            return False
-
-    # =========================================================
-    # ORDER EVENTS (Signals should be based on fills)
+    # ORDER EVENTS (Signals based on fills)
     # =========================================================
     def OnOrderEvent(self, orderEvent: OrderEvent):
         try:
-            
             if orderEvent.Status != OrderStatus.Filled:
                 return
 
@@ -743,7 +620,6 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
 
             fill_price = float(orderEvent.FillPrice)
             fill_qty = float(orderEvent.FillQuantity)
-
             balance = float(self.Portfolio.TotalPortfolioValue)
 
             # BUY filled
@@ -751,39 +627,47 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                 self.entry_price = fill_price
                 self.entry_time = self.Time
                 self.pending_entry = False
-                self.pred_exit_below_count = 0
 
                 self.CancelReminder("REM_ENTRY")
                 msg, t = self.FormatEntrySignal(self.entry_price)
                 self.SendSignal("Signal Entry (Filled)", msg)
 
                 self.sendAPI("/orders", {
-                    "id_method":self.strategy_id, "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"), 
+                    "id_method": self.strategy_id,
+                    "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
                     "type": "entry",
                     "jenis": "buy",
                     "price": fill_price,
                     "quantity": fill_qty,
                     "balance": balance,
                     "message": msg
-                    })
+                })
 
             # SELL filled (exit)
             elif fill_qty < 0:
                 reason = self.last_exit_reason or "EXIT"
                 if self.entry_price is not None:
                     msg, real_tp, real_sl = self.FormatExitSignal(self.entry_price, fill_price, reason)
+                    # Track consecutive losses
+                    if fill_price < self.entry_price:
+                        self.consecutive_losses += 1
+                        self.Debug(f"[LOSS] Consecutive losses: {self.consecutive_losses}")
+                    else:
+                        self.consecutive_losses = 0  # Reset on profit
                 else:
                     msg, real_tp, real_sl = self.FormatExitSignal(0.0, fill_price, reason)
 
                 self.SendSignal("Signal Exit (Filled)", msg)
 
                 self.sendAPI("/orders", {
-                    "id_method":self.strategy_id, "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"), 
+                    "id_method": self.strategy_id,
+                    "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
                     "type": "exit",
                     "jenis": "sell",
                     "price": fill_price,
                     "quantity": fill_qty,
                     "balance": balance,
+                    "consecutive_losses": self.consecutive_losses,
                     "message": msg
                 })
 
@@ -794,7 +678,6 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                 self.pending_exit = False
                 self.pending_entry = False
                 self.last_exit_reason = None
-                self.pred_exit_below_count = 0
 
         except Exception as e:
             self.Debug(f"OnOrderEvent error: {e}")
@@ -803,195 +686,210 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
     # ONDATA
     # =========================================================
     def OnData(self, data: Slice):
-            if self.IsWarmingUp:
-                return
+        if self.IsWarmingUp:
+            return
 
-            # Reset per-bar reminder info for logging
-            self._reminder_fired_info = None
+        self._reminder_fired_info = None
+        cur_price = self.last_price
 
-            # Default price for logging if bar missing
-            cur_price = self.last_price
+        if not data.ContainsKey(self.symbol):
+            self.LogOnDataLine(self.Time, cur_price, "HOLD", "No bar data for symbol")
+            return
 
-            if not data.ContainsKey(self.symbol):
-                # Rare in live; still log as HOLD
-                self.LogOnDataLine(self.Time, cur_price, "HOLD", "No bar data for symbol")
-                return
+        # Prevent re-processing the same bar
+        if self.last_trade_bar_time == self.Time:
+            return
 
-            # Prevent re-processing the same bar
-            if self.last_trade_bar_time == self.Time:
-                return
-            # Live: check model from server every OnData() timeframe (reload only if model_version changed)
-            if self.LiveMode:
-                self.MaybeRefreshModelFromServer(force=True)
+        # Live: check model from server every OnData()
+        if self.LiveMode:
+            self.MaybeRefreshModelFromServer(force=True)
 
-            bar = data[self.symbol]
+        bar = data[self.symbol]
 
-            # Extract OHLCV
-            if isinstance(bar, TradeBar):
-                open_ = float(bar.Open)
-                high = float(bar.High)
-                low = float(bar.Low)
-                close = float(bar.Close)
-                volume = float(bar.Volume) if bar.Volume is not None else 0.0
-            elif isinstance(bar, QuoteBar):
-                src = bar.Bid if bar.Bid is not None else bar.Ask
-                if src is None:
-                    self.LogOnDataLine(self.Time, cur_price, "HOLD", "QuoteBar missing bid/ask")
-                    self.last_trade_bar_time = self.Time
-                    return
-                open_ = float(src.Open)
-                high = float(src.High)
-                low = float(src.Low)
-                close = float(src.Close)
-                volume = 0.0
-            else:
-                self.LogOnDataLine(self.Time, cur_price, "HOLD", f"Unsupported bar type: {type(bar)}")
+        # Extract OHLCV
+        if isinstance(bar, TradeBar):
+            open_ = float(bar.Open)
+            high = float(bar.High)
+            low = float(bar.Low)
+            close = float(bar.Close)
+            volume = float(bar.Volume) if bar.Volume is not None else 0.0
+        elif isinstance(bar, QuoteBar):
+            src = bar.Bid if bar.Bid is not None else bar.Ask
+            if src is None:
+                self.LogOnDataLine(self.Time, cur_price, "HOLD", "QuoteBar missing bid/ask")
                 self.last_trade_bar_time = self.Time
                 return
-
-            # fallback volume if missing
-            if volume <= 0:
-                sec = self.Securities[self.symbol]
-                if getattr(sec, "Volume", 0) and sec.Volume > 0:
-                    volume = float(sec.Volume)
-                else:
-                    volume = 1_000_000.0
-
-            # update last price
-            self.last_price = close
-            cur_price = close
-
-            # Update rolling window
-            self.price_window.append({
-                "time": self.Time,
-                "open": open_,
-                "high": high,
-                "low": low,
-                "close": close,
-                "volume": volume,
-            })
-
-            if len(self.price_window) < 30:
-                self.LogOnDataLine(self.Time, cur_price, "HOLD", f"Warm window ({len(self.price_window)}/30) - waiting more bars")
-                self.last_trade_bar_time = self.Time
-                return
-
-            # Cooldown pause
-            if self.trading_paused_until is not None and self.Time < self.trading_paused_until:
-                self.LogOnDataLine(self.Time, cur_price, "HOLD", f"COOLDOWN until {self.trading_paused_until}")
-                self.last_trade_bar_time = self.Time
-                return
-
-            # If we have pending orders, do not submit more orders
-            if self.pending_entry or self.pending_exit:
-                try:
-                    open_orders = self.Transactions.GetOpenOrders(self.symbol)
-                except Exception:
-                    open_orders = []
-
-                # If no open orders exist, clear pending flags to avoid permanent lock
-                if not open_orders:
-                    if self.pending_entry or self.pending_exit:
-                        self.pending_entry = False
-                        self.pending_exit = False
-                        self.LogOnDataLine(self.Time, cur_price, "HOLD", "Pending cleared (no open orders)")
-                else:
-                    self.LogOnDataLine(self.Time, cur_price, "HOLD", "Pending order fill - waiting")
-                    self.last_trade_bar_time = self.Time
-                    return
-
-            # Drawdown check
-            if not self.CheckMaxDrawdownAndCooldown():
-                # CheckMaxDrawdownAndCooldown already sets pause window and liquidates
-                ru = self.trading_paused_until
-                self.LogOnDataLine(self.Time, cur_price, "HOLD", f"RISK cooldown triggered; paused until {ru}")
-                self.last_trade_bar_time = self.Time
-                return
-
-            # Build features + predict
-            features = self.BuildFeatures()
-            if features is None:
-                self.LogOnDataLine(self.Time, cur_price, "HOLD", "Features unavailable (insufficient history or calc error)")
-                self.last_trade_bar_time = self.Time
-                return
-
-            pred = self.Predict(features)
-            if pred is None:
-                if self.model is None and not self._attempted_objectstore_reload:
-                    self._attempted_objectstore_reload = True
-                    self.Debug("[PREDICT] Model is None; attempting ObjectStore reload")
-                    self.LoadModelFromObjectStore()
-                    pred = self.Predict(features)
-
-                if pred is None:
-                    if self.model is None:
-                        reason = "Prediction failed (model is None)"
-                    else:
-                        reason = "Prediction failed (predict_proba error)"
-                    self.LogOnDataLine(self.Time, cur_price, "HOLD", reason)
-                    self.last_trade_bar_time = self.Time
-                    return
-
-            # PATCH: prediction smoothing (moving average)
-            pred_raw = float(pred)
-            try:
-                self.pred_history.append(pred_raw)
-                pred = float(np.mean(self.pred_history))
-            except Exception:
-                pred = pred_raw
-
-            # Update dynamic thresholds based on recent predictions
-            self.UpdateDynamicThresholds(pred)
-
-            # Arm & process short reminders (1-3h) BEFORE any actions
-            self.MaybeArmReminders(pred, cur_price)
-            self.ProcessReminders(pred, cur_price)
-
-            # SL/TP first (exit has priority)
-            if self.CheckStopLossTakeProfit(cur_price):
-                rsn = self.last_exit_reason or "EXIT"
-                self.LogOnDataLine(self.Time, cur_price, f"EXIT ({rsn})", f"Exit triggered by {rsn}", pred=pred)
-                self.last_trade_bar_time = self.Time
-                return
-
-            # Decision based on prediction
-            pre_entry = self.pending_entry
-            pre_exit = self.pending_exit
-            qty = self.Portfolio[self.symbol].Quantity
-
-            self.TradeLogic(pred)
-
-            # Decide status for logging
-            status = "HOLD"
-            reason = ""
-
-            if (not pre_entry) and self.pending_entry:
-                status = "ENTRY"
-                reason = f"pred={pred:.3f} > buy_th={self.current_buy_threshold:.2f} -> submit BUY"
-            elif (not pre_exit) and self.pending_exit:
-                rsn = self.last_exit_reason or "PRED"
-                status = f"EXIT ({rsn})"
-                reason = f"pred={pred:.3f} < sell_th={self.current_sell_threshold:.2f} -> submit EXIT ({rsn})"
-            elif self._reminder_fired_info is not None:
-                tipe, hours, rsn = self._reminder_fired_info
-                status = "REMINDER"
-                reason = f"{tipe} | {self._reminder_label(hours)} | {rsn}"
-            else:
-                # HOLD reason by prediction zone
-                if qty > 0 and pred >= self.current_sell_threshold:
-                    reason = f"Holding position; pred={pred:.3f} not below sell_th={self.current_sell_threshold:.2f}"
-                elif qty <= 0 and pred <= self.current_buy_threshold:
-                    reason = f"No position; pred={pred:.3f} not above buy_th={self.current_buy_threshold:.2f}"
-                else:
-                    reason = f"Neutral; pred={pred:.3f}"
-
-            # add model version info
-            mv = getattr(self, "current_model_version", None)
-            if mv:
-                reason = f"{reason} | model_ver={mv}"
-
-            self.LogOnDataLine(self.Time, cur_price, status, reason, pred=pred)
+            open_ = float(src.Open)
+            high = float(src.High)
+            low = float(src.Low)
+            close = float(src.Close)
+            volume = 0.0
+        else:
+            self.LogOnDataLine(self.Time, cur_price, "HOLD", f"Unsupported bar type: {type(bar)}")
             self.last_trade_bar_time = self.Time
+            return
+
+        # fallback volume if missing
+        if volume <= 0:
+            sec = self.Securities[self.symbol]
+            if getattr(sec, "Volume", 0) and sec.Volume > 0:
+                volume = float(sec.Volume)
+            else:
+                volume = 1_000_000.0
+
+        self.last_price = close
+        cur_price = close
+
+        # Update rolling window
+        self.price_window.append({
+            "time": self.Time,
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+        })
+
+        if len(self.price_window) < 30:
+            self.LogOnDataLine(self.Time, cur_price, "HOLD", f"Warm window ({len(self.price_window)}/30)")
+            self.last_trade_bar_time = self.Time
+            return
+
+        # Update trade counters (reset on new day/week)
+        current_date = self.Time.date()
+        current_week = self.Time.isocalendar()[1]
+        if self.last_trade_date != current_date:
+            self.trades_today = 0
+            self.last_trade_date = current_date
+        if self.last_trade_week != current_week:
+            self.trades_this_week = 0
+            self.last_trade_week = current_week
+
+        # Update bars since last trade
+        self.bars_since_last_trade += 1
+
+        # Cooldown pause
+        if self.trading_paused_until is not None and self.Time < self.trading_paused_until:
+            self.LogOnDataLine(self.Time, cur_price, "HOLD", f"COOLDOWN until {self.trading_paused_until}")
+            self.last_trade_bar_time = self.Time
+            return
+
+        # If we have pending orders, do not submit more
+        if self.pending_entry or self.pending_exit:
+            self.LogOnDataLine(self.Time, cur_price, "HOLD", "Pending order fill - waiting")
+            self.last_trade_bar_time = self.Time
+            return
+
+        # Drawdown check
+        if not self.CheckMaxDrawdownAndCooldown():
+            ru = self.trading_paused_until
+            self.LogOnDataLine(self.Time, cur_price, "HOLD", f"RISK cooldown triggered; paused until {ru}")
+            self.last_trade_bar_time = self.Time
+            return
+
+        # Volatility filter check
+        if not self.CheckVolatilityFilter(cur_price):
+            self.LogOnDataLine(self.Time, cur_price, "HOLD", "Volatility filter - market conditions not suitable")
+            self.last_trade_bar_time = self.Time
+            return
+
+        # Build features + predict
+        features = self.BuildFeatures()
+        if features is None:
+            self.LogOnDataLine(self.Time, cur_price, "HOLD", "Features unavailable")
+            self.last_trade_bar_time = self.Time
+            return
+
+        pred = self.Predict(features)
+        if pred is None:
+            self.LogOnDataLine(self.Time, cur_price, "HOLD", "Prediction failed")
+            self.last_trade_bar_time = self.Time
+            return
+
+        # Prediction smoothing
+        pred_raw = float(pred)
+        try:
+            self.pred_history.append(pred_raw)
+            pred = float(np.mean(self.pred_history))
+        except Exception:
+            pred = pred_raw
+
+        # Arm & process reminders
+        self.MaybeArmReminders(pred, cur_price)
+        self.ProcessReminders(pred, cur_price)
+
+        # Current position quantity
+        qty = self.Portfolio[self.symbol].Quantity
+
+        # SL/TP first (exit has priority)
+        if self.CheckStopLossTakeProfit(cur_price):
+            rsn = self.last_exit_reason or "EXIT"
+            self.LogOnDataLine(self.Time, cur_price, f"EXIT ({rsn})", f"Exit triggered by {rsn}", pred=pred)
+            self.last_trade_bar_time = self.Time
+            return
+
+        # Time-based exit for 3bar label alignment
+        if self.max_hold_bars and qty > 0 and self.entry_time is not None:
+            if self.Time >= (self.entry_time + timedelta(hours=int(self.max_hold_bars))):
+                self.pending_exit = True
+                self.last_exit_reason = "TIME"
+                exit_price = float(self.Securities[self.symbol].Price)
+                msg, real_tp, real_sl = self.FormatExitSignal(self.entry_price or 0.0, exit_price, "TIME")
+                self.Debug(f"Signal Exit (TIME): {msg}")
+                self.sendAPI("/signals", {
+                    "id_method": self.strategy_id,
+                    "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "type": "exit",
+                    "jenis": "sell",
+                    "price_entry": self.entry_price or 0.0,
+                    "price_exit": exit_price,
+                    "target_tp": 0,
+                    "target_sl": 0,
+                    "real_tp": real_tp,
+                    "real_sl": real_sl,
+                    "message": msg
+                })
+                self.Liquidate(self.symbol)
+                self.LogOnDataLine(self.Time, cur_price, "EXIT (TIME)", "Exit after max_hold_bars", pred=pred)
+                self.last_trade_bar_time = self.Time
+                return
+
+        # Decision based on prediction
+        pre_entry = self.pending_entry
+        pre_exit = self.pending_exit
+
+        self.TradeLogic(pred)
+
+        # Decide status for logging
+        status = "HOLD"
+        reason = ""
+
+        if (not pre_entry) and self.pending_entry:
+            status = "ENTRY"
+            reason = f"pred={pred:.3f} > buy_th={self.prediction_buy_threshold:.2f}"
+        elif (not pre_exit) and self.pending_exit:
+            rsn = self.last_exit_reason or "PRED"
+            status = f"EXIT ({rsn})"
+            reason = f"pred={pred:.3f} < sell_th={self.prediction_sell_threshold:.2f}"
+        elif self._reminder_fired_info is not None:
+            tipe, hours, rsn = self._reminder_fired_info
+            status = "REMINDER"
+            reason = f"{tipe} | {self._reminder_label(hours)} | {rsn}"
+        else:
+            if qty > 0 and pred >= self.prediction_sell_threshold:
+                reason = f"Holding; pred={pred:.3f} not below sell_th"
+            elif qty <= 0 and pred <= self.prediction_buy_threshold:
+                reason = f"No position; pred={pred:.3f} not above buy_th"
+            else:
+                reason = f"Neutral; pred={pred:.3f}"
+
+        mv = getattr(self, "current_model_version", None)
+        if mv:
+            reason = f"{reason} | model_ver={mv[:20]}..."
+
+        self.LogOnDataLine(self.Time, cur_price, status, reason, pred=pred)
+        self.last_trade_bar_time = self.Time
+
     # =========================================================
     # ONDATA LOGGING
     # =========================================================
@@ -1004,18 +902,22 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             if pred is not None:
                 msg = f"[ONDATA] {t} | price={p} | status={s} | pred={pred:.3f} | reason={r}"
                 self.Debug(msg)
-                self.sendAPI("/logs", {"id_method":self.strategy_id, "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"), "message": msg})
+                self.sendAPI("/logs", {"id_method": self.strategy_id, "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"), "message": msg})
             else:
                 msg = f"[ONDATA] {t} | price={p} | status={s} | reason={r}"
-                self.Debug(f"[ONDATA] {t} | price={p} | status={s} | reason={r}")
-                self.sendAPI("/logs", {"id_method":self.strategy_id, "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"), "message": msg})
+                self.Debug(msg)
+                self.sendAPI("/logs", {"id_method": self.strategy_id, "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"), "message": msg})
         except Exception:
             pass
 
     # =========================================================
-    # FEATURES
+    # FEATURES (17 price features only)
     # =========================================================
     def BuildFeatures(self):
+        """
+        Build 17 price features from OHLCV data.
+        These features are fully compatible with QuantConnect data availability.
+        """
         try:
             df = pd.DataFrame(list(self.price_window))
             cur = df.iloc[-1]
@@ -1033,26 +935,32 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             if len(closes) < 6:
                 return None
 
+            # Returns
             ret_1 = closes[-1] / closes[-2] - 1.0 if closes[-2] > 0 else 0.0
             ret_5 = closes[-1] / closes[-6] - 1.0 if closes[-6] > 0 else 0.0
             log_ret = np.log(closes[-1] / closes[-2]) if closes[-2] > 0 else 0.0
 
+            # Volatility
             returns = np.diff(closes) / closes[:-1]
             vol_5 = float(np.std(returns[-5:])) if len(returns) >= 5 else 0.0
 
+            # Price range
             true_range = high - low
             mean_5 = float(np.mean(closes[-5:]))
             std_5 = float(np.std(closes[-5:]))
 
+            # Volume features
             vol_mean_10 = float(np.mean(volumes[-10:])) if len(volumes) >= 10 else volume
             vol_std_10 = float(np.std(volumes[-10:])) if len(volumes) >= 10 else 1.0
             vol_z = (volumes[-1] - vol_mean_10) / vol_std_10 if vol_std_10 > 0 else 0.0
             vol_change = volumes[-1] / volumes[-2] - 1.0 if len(volumes) > 1 and volumes[-2] > 0 else 0.0
 
+            # Candlestick features
             wick_up = high - max(open_, close)
             wick_low = min(open_, close) - low
             body_size = abs(close - open_)
 
+            # Build feature map (17 price features only)
             feat_map = {
                 "price_open": open_,
                 "price_high": high,
@@ -1074,6 +982,7 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                 "price_body_size": body_size,
             }
 
+            # Build feature vector in expected order
             order = self.expected_feature_order or self.model_features
             vec = []
             n_expected = int(self.model_n_features) if self.model_n_features is not None else len(order)
@@ -1100,48 +1009,13 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
     def Predict(self, feature_array: np.ndarray):
         try:
             if self.model is None:
-                if not self._logged_model_missing:
-                    self.Debug("[PREDICT] Model is None; skipping predictions")
-                    self._logged_model_missing = True
+                self.Error("Model is None! Check if API/Object Store is working.")
                 return None
             proba = self.model.predict_proba(feature_array)[0, 1]
             return float(proba)
         except Exception as e:
-            if not self._logged_predict_error:
-                self.Debug(f"[PREDICT] Error during predict_proba: {e}")
-                self._logged_predict_error = True
+            self.Error(f"Predict error: {e}")
             return None
-
-    # =========================================================
-    # DYNAMIC THRESHOLDS
-    # =========================================================
-    def UpdateDynamicThresholds(self, pred: float):
-        if not self.use_dynamic_thresholds:
-            self.current_buy_threshold = self.prediction_buy_threshold
-            self.current_sell_threshold = self.prediction_sell_threshold
-            return
-
-        self.pred_window.append(float(pred))
-        if len(self.pred_window) < max(30, int(self.dynamic_threshold_window / 4)):
-            self.current_buy_threshold = self.prediction_buy_threshold
-            self.current_sell_threshold = self.prediction_sell_threshold
-            return
-
-        buy_pct = float(self.dynamic_threshold_buy_percentile)
-        sell_pct = float(self.dynamic_threshold_sell_percentile)
-        buy_th = float(np.percentile(self.pred_window, buy_pct))
-        sell_th = float(np.percentile(self.pred_window, sell_pct))
-
-        buy_th = max(0.01, min(0.99, buy_th))
-        sell_th = max(0.01, min(0.99, sell_th))
-
-        if buy_th - sell_th < self.dynamic_threshold_min_gap:
-            mid = (buy_th + sell_th) / 2.0
-            buy_th = min(0.99, mid + self.dynamic_threshold_min_gap / 2.0)
-            sell_th = max(0.01, mid - self.dynamic_threshold_min_gap / 2.0)
-
-        self.current_buy_threshold = buy_th
-        self.current_sell_threshold = sell_th
 
     # =========================================================
     # TRADING
@@ -1149,17 +1023,34 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
     def TradeLogic(self, pred: float):
         qty = self.Portfolio[self.symbol].Quantity
 
-        if qty > 0 and pred >= self.current_sell_threshold:
-            self.pred_exit_below_count = 0
+        # ===== ENTRY FILTERS (REDUCE TRADES) =====
+        # Check prediction confidence
+        if pred < self.min_prediction_confidence:
+            return  # Skip low confidence predictions
+
+        # Check trade cooldown (bars since last trade)
+        if self.bars_since_last_trade < self.trade_cooldown_bars:
+            return  # Wait for cooldown
+
+        # Check daily/weekly trade limits
+        if self.trades_today >= self.max_trades_per_day:
+            return  # Max daily trades reached
+        if self.trades_this_week >= self.max_trades_per_week:
+            return  # Max weekly trades reached
+
+        # Check consecutive losses
+        if self.consecutive_losses >= self.max_consecutive_losses:
+            return  # Too many consecutive losses
 
         # ENTRY
-        if pred > self.current_buy_threshold and qty <= 0 and not self.pending_entry and not self.pending_exit:
+        if pred > self.prediction_buy_threshold and qty <= 0 and not self.pending_entry and not self.pending_exit:
             self.pending_entry = True
-            self.entry_price = float(self.Securities[self.symbol].Price)  # provisional
+            self.entry_price = float(self.Securities[self.symbol].Price)
             self.entry_time = self.Time
-            self.pred_exit_below_count = 0
+            self.bars_since_last_trade = 0  # Reset cooldown counter
+            self.trades_today += 1
+            self.trades_this_week += 1
 
-            # kirim signal SUBMIT (hindari spam per bar)
             if self._last_submit_signal_bar != self.entry_time or self._last_submit_signal_kind != "ENTRY":
                 self._last_submit_signal_bar = self.entry_time
                 self._last_submit_signal_kind = "ENTRY"
@@ -1181,35 +1072,12 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                     "message": msg
                 })
 
-            order_qty = 0.0
-            try:
-                order_qty = float(self.CalculateOrderQuantity(self.symbol, self.position_size_pct))
-            except Exception:
-                order_qty = 0.0
-
-            if abs(order_qty) < self.min_order_quantity:
-                if self.min_order_quantity > 0:
-                    order_qty = self.min_order_quantity
-                else:
-                    order_qty = 0.0
-
-            if order_qty == 0.0:
-                self.pending_entry = False
-                self.Debug("BUY skipped: calculated order quantity is 0")
-                return
-
-            ticket = self.MarketOrder(self.symbol, order_qty)
-            if ticket is None:
-                self.pending_entry = False
-                self.Debug("BUY failed: MarketOrder ticket is None")
-                return
-
-            self.Debug(f"BUY MarketOrder(qty={order_qty:.6f}) pred={pred:.3f} est_entry={self.entry_price:.2f}")
-
+            self.SetHoldings(self.symbol, self.position_size_pct)
+            self.Debug(f"BUY SetHoldings({self.position_size_pct:.0%}) pred={pred:.3f}")
 
         # EXIT by prediction
-        elif pred < self.current_sell_threshold and qty > 0 and not self.pending_exit:
-            # PATCH: minimum holding period before allowing prediction-based exit
+        elif pred < self.prediction_sell_threshold and qty > 0 and not self.pending_exit:
+            # Minimum holding period
             hold_ok = True
             try:
                 mh = int(getattr(self, 'min_hold_bars', 0) or 0)
@@ -1222,24 +1090,11 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             if not hold_ok:
                 return
 
-            self.pred_exit_below_count += 1
-            if self.pred_exit_below_count < self.pred_exit_confirm_bars:
-                return
-
-            try:
-                if self.entry_price is not None and self.entry_price > 0:
-                    cur_price = float(self.Securities[self.symbol].Price)
-                    pnl_pct = (cur_price - self.entry_price) / self.entry_price
-                    if pnl_pct < self.min_pred_exit_pnl_pct:
-                        return
-            except Exception:
-                pass
-
             self.pending_exit = True
             self.last_exit_reason = "PRED"
 
             ent_price = self.entry_price
-            exit_price = float(self.Securities[self.symbol].Price)  # provisional
+            exit_price = float(self.Securities[self.symbol].Price)
             exit_time = self.Time
 
             if self._last_submit_signal_bar != exit_time or self._last_submit_signal_kind != "EXIT":
@@ -1264,7 +1119,6 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                 })
 
             self.Liquidate(self.symbol)
-
             self.Debug(f"EXIT (PRED) pred={pred:.3f}")
 
     # =========================================================
@@ -1285,6 +1139,8 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             if pnl_pct <= -self.stop_loss_pct:
                 self.pending_exit = True
                 self.last_exit_reason = "SL"
+                self.consecutive_losses += 1  # Track loss
+                self.Debug(f"[SL] Consecutive losses: {self.consecutive_losses}")
                 self.Liquidate(self.symbol)
 
                 msg = f"STOP LOSS trigger pnl={pnl_pct:.2%}"
@@ -1309,6 +1165,8 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             if pnl_pct >= self.take_profit_pct:
                 self.pending_exit = True
                 self.last_exit_reason = "TP"
+                self.consecutive_losses = 0  # Reset on profit
+                self.Debug(f"[TP] Reset consecutive losses")
                 self.Liquidate(self.symbol)
 
                 msg = f"TAKE PROFIT trigger pnl={pnl_pct:.2%}"
@@ -1361,6 +1219,34 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         return True
 
     # =========================================================
+    # VOLATILITY FILTER
+    # =========================================================
+    def CheckVolatilityFilter(self, price: float) -> bool:
+        """Check if current volatility is within acceptable range."""
+        try:
+            if len(self.price_window) < self.atr_period:
+                return True  # Not enough data, allow trading
+
+            # Calculate ATR (Average True Range)
+            df = pd.DataFrame(list(self.price_window))
+            df['true_range'] = df['high'] - df['low']
+            atr = float(df['true_range'].rolling(window=self.atr_period, min_periods=1).mean().iloc[-1])
+            atr_pct = atr / price if price > 0 else 0
+
+            # Check if volatility is too low or too high
+            if atr_pct < self.min_volatility_threshold:
+                self.Debug(f"[VOLATILITY] Too low: {atr_pct:.4f} < {self.min_volatility_threshold}")
+                return False
+            if atr_pct > self.max_volatility_threshold:
+                self.Debug(f"[VOLATILITY] Too high: {atr_pct:.4f} > {self.max_volatility_threshold}")
+                return False
+
+            return True
+        except Exception as e:
+            self.Debug(f"CheckVolatilityFilter error: {e}")
+            return True  # Allow trading on error
+
+    # =========================================================
     # SIGNAL FORMATTING
     # =========================================================
     def _fmt_price(self, x: float) -> str:
@@ -1384,7 +1270,7 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         sl_price = entry * (1.0 - sl_pct)
 
         tp_amt = tp_price - entry
-        sl_amt = entry - sl_price  # positive
+        sl_amt = entry - sl_price
 
         rr = (tp_amt / sl_amt) if sl_amt > 0 else 0.0
         return {
@@ -1400,11 +1286,21 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
 
     def FormatEntrySignal(self, entry_price: float):
         t = self.CalcEntryTargets(entry_price)
+
+        # Calculate margin and position size with leverage
+        position_value = self.Portfolio.TotalPortfolioValue * self.position_size_pct
+        margin_used = position_value / self.leverage if self.leverage > 0 else position_value
+
         lines = [
-            "Jenis Signal: Signal Entry",
+            "Jenis Signal: Signal Entry (17 Price Features)",
             f"Symbol: {self.symbol}",
             f"Time: {self.Time}",
             f"Price: {self._fmt_price(t['entry'])}",
+            "",
+            f"Leverage: {self.leverage}x",
+            f"Position Size: {self._fmt_price(position_value)}",
+            f"Margin Used: {self._fmt_price(margin_used)}",
+            f"Available Margin: {self._fmt_price(self.Portfolio.Cash)}",
             "",
             "TP:",
             f"- Price TP: {self._fmt_price(t['tp_price'])}",
@@ -1425,15 +1321,16 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         exitp = float(exit_price)
 
         lines = [
-            "Jenis Signal: Signal Exit",
+            "Jenis Signal: Signal Exit (17 Price Features)",
             f"Symbol: {self.symbol}",
             f"Time: {self.Time}",
+            f"Leverage: {self.leverage}x",
         ]
 
         real_tp = 0
         real_sl = 0
 
-        if(exitp > entry):
+        if exitp > entry:
             real_tp = exitp - entry
         else:
             real_sl = entry - exitp
@@ -1441,10 +1338,14 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         if entry is not None:
             pnl = exitp - entry
             pnl_pct = pnl / entry if entry != 0 else 0.0
+            # PnL with leverage
+            pnl_with_leverage = pnl * self.leverage
+            pnl_pct_with_leverage = pnl_pct * self.leverage
 
             lines += [
                 f"Price Entry: {self._fmt_price(entry)}",
                 f"Price Exit: {self._fmt_price(exitp)}",
+                f"Portfolio Value: {self._fmt_price(self.Portfolio.TotalPortfolioValue)}",
             ]
 
             r = (reason or "").upper()
@@ -1454,6 +1355,7 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                     "TP (Triggered):",
                     f"- Besaran TP: {self._fmt_price(max(pnl, 0.0))}",
                     f"- Persentase TP: {self._fmt_pct(max(pnl_pct, 0.0))}",
+                    f"- PnL (with {self.leverage}x): {self._fmt_price(max(pnl_with_leverage, 0.0))} ({self._fmt_pct(max(pnl_pct_with_leverage, 0.0))})",
                 ]
             elif r == "SL":
                 lines += [
@@ -1461,12 +1363,20 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                     "SL (Triggered):",
                     f"- Besaran SL: {self._fmt_price(max(-pnl, 0.0))}",
                     f"- Persentase SL: {self._fmt_pct(max(-pnl_pct, 0.0))}",
+                    f"- Loss (with {self.leverage}x): {self._fmt_price(max(-pnl_with_leverage, 0.0))} ({self._fmt_pct(min(pnl_pct_with_leverage, 0.0))})",
+                ]
+            elif r == "PRED":
+                lines += [
+                    "",
+                    "Prediction Exit:",
+                    f"- PnL (with {self.leverage}x): {self._fmt_price(pnl_with_leverage)} ({self._fmt_pct(pnl_pct_with_leverage)})",
                 ]
 
             lines += [
                 "",
                 f"Exit Reason: {reason}",
-                f"PnL: {self._fmt_price(pnl)} ({self._fmt_pct(pnl_pct)})"
+                f"PnL: {self._fmt_price(pnl)} ({self._fmt_pct(pnl_pct)})",
+                f"PnL (with {self.leverage}x): {self._fmt_price(pnl_with_leverage)} ({self._fmt_pct(pnl_pct_with_leverage)})"
             ]
         else:
             lines += [
@@ -1524,7 +1434,7 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
 
     def FormatReminderSignal(self, tipe: str, hours: int, reason: str) -> str:
         lines = [
-            "Signal Reminder:",
+            "Signal Reminder (17 Price):",
             f"1. Tipe: {tipe}",
             f"2. Waktu: {self._reminder_label(hours)}",
             f"3. Alasan: {reason}",
@@ -1562,24 +1472,24 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             return
 
         qty = self.Portfolio[self.symbol].Quantity
-        buy_th = float(self.current_buy_threshold)
-        sell_th = float(self.current_sell_threshold)
+        buy_th = float(self.prediction_buy_threshold)
+        sell_th = float(self.prediction_sell_threshold)
 
-        # Pre-ENTRY reminder (no position)
+        # Pre-ENTRY reminder
         if qty <= 0 and (buy_th - self.entry_pred_band) <= pred < buy_th:
             gap = buy_th - pred
             hours = self._lead_hours_by_gap(gap)
             reason = f"Pred mendekati Entry (pred={pred:.3f} < buy_th={buy_th:.2f})"
             self.ArmReminder("REM_ENTRY", "Entry", hours, reason)
 
-        # Pre-EXIT reminder by prediction (has position)
+        # Pre-EXIT reminder by prediction
         if qty > 0 and sell_th < pred <= (sell_th + self.exit_pred_band):
             gap = pred - sell_th
             hours = self._lead_hours_by_gap(gap)
             reason = f"Pred mendekati Exit (pred={pred:.3f} > sell_th={sell_th:.2f})"
             self.ArmReminder("REM_EXIT_PRED", "Exit (Pred)", hours, reason)
 
-        # Pre-EXIT reminder by TP/SL proximity (has position)
+        # Pre-EXIT reminder by TP/SL proximity
         if qty > 0 and self.entry_price is not None and self.entry_price > 0:
             entry = float(self.entry_price)
             tp_price = entry * (1.0 + float(self.take_profit_pct))
@@ -1618,8 +1528,8 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             return
 
         qty = self.Portfolio[self.symbol].Quantity
-        buy_th = float(self.current_buy_threshold)
-        sell_th = float(self.current_sell_threshold)
+        buy_th = float(self.prediction_buy_threshold)
+        sell_th = float(self.prediction_sell_threshold)
 
         to_remove = []
         for key, r in list(self.reminders.items()):
@@ -1664,12 +1574,11 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                 continue
 
             msg = self.FormatReminderSignal(tipe, hours, reason)
-            # mark reminder fired for OnData logging (capture first only)
             if self._reminder_fired_info is None:
                 self._reminder_fired_info = (tipe, hours, reason)
             self.SendSignal("Signal Reminder", msg)
-            
-            self.sendAPI("/reminders", {"id_method":self.strategy_id, "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"), "message": msg})
+
+            self.sendAPI("/reminders", {"id_method": self.strategy_id, "datetime": self.Time.strftime("%Y-%m-%d %H:%M:%S"), "message": msg})
 
             self._mark_reminder_sent(tipe)
             to_remove.append(key)
@@ -1679,9 +1588,11 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
 
     def OnEndOfAlgorithm(self):
         self.Debug(f"Final Portfolio Value: {self.Portfolio.TotalPortfolioValue:.2f}")
-        self.Debug("NOTE: Missing non-price features are set to 0; results won't match offline full-feature backtests.")
+        self.Debug("Strategy: Futures17 (17 Price Features)")
 
-
+    # =========================================================
+    # API HELPERS
+    # =========================================================
     def _join_url(self, base: str, path: str) -> str:
         base = (base or "").strip().rstrip("/")
         path = (path or "").strip()
@@ -1691,14 +1602,7 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
 
     def sendAPI(self, path: str, params: dict):
         """
-        Kirim POST JSON ke:
-        {self.apidomain}{path}
-
-        Contoh:
-        self.sendAPI("/logs", {"id":"1"})
-        self.sendAPI("/signals", {"id":"1"})
-        self.sendAPI("/orders", {"id":"1"})
-        self.sendAPI("/reminders", {"id":"1"})
+        Kirim POST JSON ke: {self.apidomain}{path}
         """
         try:
             if not getattr(self, "apidomain", None):
@@ -1709,8 +1613,6 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             data = json.dumps(params if params is not None else {}, separators=(",", ":"))
             headers = dict(getattr(self, "api_headers", {}) or {})
 
-            # Webhook QuantConnect = HTTP POST
-            # PATCH: QuantConnect notification webhook
             try:
                 self.Notify.Web(url, data, headers)
             except Exception:
@@ -1720,8 +1622,7 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
                     self.Debug(f"[sendAPI] Notify.Web failed: {e}")
                     return False
 
-            # Optional log
-            self.Debug(f"[sendAPI] POST {url} | payload={data}")
+            self.Debug(f"[sendAPI] POST {url}")
             return True
 
         except Exception as e:
