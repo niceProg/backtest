@@ -2,5 +2,5 @@ __pycache__
 output_train
 output_train_futures
 output_train_futures_price
-v1_futures_new_gen/output_train_futures_new_gen
+output_train_futures_new_gen
 .backtest
