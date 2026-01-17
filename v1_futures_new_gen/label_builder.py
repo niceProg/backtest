@@ -29,18 +29,37 @@ logger = logging.getLogger(__name__)
 class LabelBuilder:
     """Build binary classification labels for trend prediction."""
 
-    def __init__(self, data_filter: DataFilter, output_dir: str = './output_train'):
+    def __init__(self, data_filter: DataFilter, output_dir: str = './output_train',
+                 model_version: str = 'futures_new_gen'):
         self.data_filter = data_filter
         self.output_dir = Path(output_dir)
+        self.model_version = model_version
         self.label_col = 'target'
-        self.label_threshold = 0.0015
-        self.label_horizon = 6
-        self.regime_atr_window = 14
-        self.regime_atr_quantile = 0.55
+        self.label_threshold = 0.0025
+        self.label_horizon = 10
+        self.regime_atr_window = 20
+        self.regime_atr_quantile = 0.60
         # Store training parameters for database storage
-        self.exchange = getattr(data_filter, 'exchange', 'N/A') if hasattr(data_filter, 'exchange') else 'N/A'
-        self.pair = getattr(data_filter, 'pair', 'N/A') if hasattr(data_filter, 'pair') else 'N/A'
-        self.interval = getattr(data_filter, 'interval', 'N/A') if hasattr(data_filter, 'interval') else 'N/A'
+        args = getattr(data_filter, 'args', None)
+        if args is not None:
+            if args.label_threshold is not None:
+                self.label_threshold = float(args.label_threshold)
+            if args.label_horizon is not None:
+                self.label_horizon = int(args.label_horizon)
+
+        exchange_filter = getattr(data_filter, 'exchange_filter', None) or []
+        pair_filter = getattr(data_filter, 'pair_filter', None) or []
+        symbol_filter = getattr(data_filter, 'symbol_filter', None) or []
+        interval_filter = getattr(data_filter, 'interval_filter', None) or []
+
+        self.exchange = ",".join(exchange_filter) if exchange_filter else "ALL"
+        if pair_filter:
+            self.pair = ",".join(pair_filter)
+        elif symbol_filter:
+            self.pair = ",".join(symbol_filter)
+        else:
+            self.pair = "ALL"
+        self.interval = ",".join(interval_filter) if interval_filter else "ALL"
 
     def _format_timestamp(self, ts, jakarta_tz):
         """Format timestamp safely for display."""
@@ -320,6 +339,15 @@ class LabelBuilder:
         y.to_frame().to_parquet(y_file, index=False)
         logger.info(f"Labels saved to {y_file}")
 
+        # Save time index aligned with X/y for split reproducibility
+        time_file = self.output_dir / 'time_index.parquet'
+        try:
+            time_index = df.loc[X.index, ['time']].copy()
+            time_index.to_parquet(time_file, index=False)
+            logger.info(f"Time index saved to {time_file}")
+        except Exception as e:
+            logger.warning(f"Failed to save time index: {e}")
+
         # Save feature list for training
         feature_list_file = self.output_dir / 'training_features.txt'
         with open(feature_list_file, 'w') as f:
@@ -394,7 +422,7 @@ Feature Columns:
             db_storage.store_dataset_summary(
                 summary_file=summary_file.name,
                 summary_data=summary_data_bytes,  # Store as binary blob (like model_data)
-                model_version="futures_new_gen"
+                model_version=self.model_version
             )
 
             logger.info("✅ Dataset summary saved to database as blob")
@@ -480,7 +508,7 @@ Feature Columns:
             """
 
             cursor.execute(insert_query, (
-                'futures_new_gen',
+                self.model_version,
                 filename,
                 summary_content,
                 exchange,
@@ -513,7 +541,7 @@ def main():
     data_filter = DataFilter(args)
 
     # Initialize label builder
-    builder = LabelBuilder(data_filter, args.output_dir)
+    builder = LabelBuilder(data_filter, args.output_dir, args.model_version)
 
     try:
         # Load feature data

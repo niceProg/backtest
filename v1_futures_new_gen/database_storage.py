@@ -78,10 +78,10 @@ class DatabaseStorage:
 
             db_config = {
                 'host': db_host,
-                'port': int(os.getenv('DB_PORT', 3306)),
-                'database': os.getenv('DB_NAME', 'xgboost_training'),
-                'user': os.getenv('DB_USER', 'root'),
-                'password': os.getenv('DB_PASSWORD', '')
+                'port': int(os.getenv('DB_PORT')),
+                'database': os.getenv('DB_NAME'),
+                'user': os.getenv('DB_USER'),
+                'password': os.getenv('DB_PASSWORD')
             }
 
         self.db_config = db_config

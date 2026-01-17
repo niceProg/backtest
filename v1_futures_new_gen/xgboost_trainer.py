@@ -33,12 +33,16 @@ logger = logging.getLogger(__name__)
 class XGBoostTrainer:
     """Train XGBoost model for trend prediction."""
 
-    def __init__(self, data_filter: DataFilter, output_dir: str = './output_train'):
+    def __init__(self, data_filter: DataFilter, output_dir: str = './output_train',
+                 model_version: str = 'futures_new_gen'):
         self.data_filter = data_filter
         self.output_dir = Path(output_dir)
+        self.model_version = model_version
         self.model = None
         self.feature_names = None
         self.best_params = None
+        self.time_index = None
+        self.split_info = {}
 
     def load_training_data(self) -> tuple:
         """Load prepared training data."""
@@ -62,6 +66,15 @@ class XGBoostTrainer:
         try:
             X = pd.read_parquet(X_file)
             y = pd.read_parquet(y_file).iloc[:, 0]  # Get first column as Series
+
+            time_file = self.output_dir / 'time_index.parquet'
+            if not time_file.exists():
+                time_file = datasets_dir / 'time_index.parquet'
+            if time_file.exists():
+                try:
+                    self.time_index = pd.read_parquet(time_file).iloc[:, 0]
+                except Exception as e:
+                    logger.warning(f"Failed to load time index: {e}")
 
             logger.info(f"Loaded features: {X.shape}")
             logger.info(f"Loaded labels: {y.shape}")
@@ -101,6 +114,28 @@ class XGBoostTrainer:
         logger.info(f"Train set: {X_train.shape[0]} samples ({y_train.mean():.3f} bullish)")
         logger.info(f"Validation set: {X_val.shape[0]} samples ({y_val.mean():.3f} bullish)")
         logger.info(f"Test set: {X_test.shape[0]} samples ({y_test.mean():.3f} bullish)")
+
+        self.split_info = {
+            "train_end_idx": train_end,
+            "val_end_idx": val_end,
+            "test_size": test_size,
+            "validation_size": validation_size
+        }
+        if self.time_index is not None and len(self.time_index) == len(X):
+            try:
+                train_time = (self.time_index.iloc[0], self.time_index.iloc[train_end - 1]) if train_end > 0 else (None, None)
+                val_time = (self.time_index.iloc[train_end], self.time_index.iloc[val_end - 1]) if val_end > train_end else (None, None)
+                test_time = (self.time_index.iloc[val_end], self.time_index.iloc[-1]) if val_end < len(X) else (None, None)
+                self.split_info.update({
+                    "train_time_range": [str(train_time[0]), str(train_time[1])],
+                    "val_time_range": [str(val_time[0]), str(val_time[1])],
+                    "test_time_range": [str(test_time[0]), str(test_time[1])]
+                })
+                logger.info(f"Train time range: {train_time[0]} -> {train_time[1]}")
+                logger.info(f"Val time range: {val_time[0]} -> {val_time[1]}")
+                logger.info(f"Test time range: {test_time[0]} -> {test_time[1]}")
+            except Exception as e:
+                logger.warning(f"Failed to compute split time ranges: {e}")
 
         return X_train, X_val, X_test, y_train, y_val, y_test
 
@@ -319,7 +354,8 @@ class XGBoostTrainer:
             'metrics': metrics,
             'cross_validation': cv_results,
             'feature_count': len(self.feature_names),
-            'sample_count': int(getattr(self, 'sample_count', 0))
+            'sample_count': int(getattr(self, 'sample_count', 0)),
+            'split_info': self.split_info or {}
         }
 
         results_path = self.output_dir / f'training_results_{timestamp}.json'
@@ -387,7 +423,7 @@ class XGBoostTrainer:
                 train_score=results['metrics'].get('train_auc', 0),
                 val_score=results['metrics'].get('val_auc', 0),
                 cv_scores=results['cross_validation'].get('cv_scores', []),
-                model_version="futures_new_gen"
+                model_version=self.model_version
             )
 
             logger.info("Model saved to database")
@@ -468,7 +504,7 @@ def main():
     data_filter = DataFilter(args)
 
     # Initialize trainer
-    trainer = XGBoostTrainer(data_filter, args.output_dir)
+    trainer = XGBoostTrainer(data_filter, args.output_dir, args.model_version)
 
     try:
         # Load training data

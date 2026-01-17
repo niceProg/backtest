@@ -5,6 +5,7 @@ Provides filtering capabilities for exchange, pair, interval, time, and days.
 """
 
 import argparse
+import os
 from typing import Optional, List
 import sys
 from datetime import datetime, timedelta
@@ -76,13 +77,37 @@ Examples:
         help='Output directory for processed data (default: ./output_train)'
     )
 
+    # Label configuration
+    parser.add_argument(
+        '--label-threshold',
+        type=float,
+        help='Label threshold for price change (e.g. 0.002 for 0.2%)'
+    )
+    parser.add_argument(
+        '--label-horizon',
+        type=int,
+        help='Label horizon in bars (e.g. 8 or 12)'
+    )
+
+    parser.add_argument(
+        '--model-version',
+        type=str,
+        default=os.getenv('MODEL_VERSION'),
+        help='Model version label for database/storage separation (required)'
+    )
+
     parser.add_argument(
         '--verbose',
         action='store_true',
         help='Enable verbose logging'
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if not args.model_version:
+        parser.error("--model-version is required (ex: futures_new_gen_btc or futures_new_gen_eth)")
+
+    return args
 
 class DataFilter:
     """Handles data filtering based on command-line arguments."""
@@ -326,6 +351,14 @@ def validate_arguments(args):
     # Validate days
     if args.days and args.days < 1:
         print("Error: Days must be a positive integer")
+        sys.exit(1)
+
+    if args.label_threshold is not None and args.label_threshold <= 0:
+        print("Error: label-threshold must be > 0")
+        sys.exit(1)
+
+    if args.label_horizon is not None and args.label_horizon < 1:
+        print("Error: label-horizon must be >= 1")
         sys.exit(1)
 
 if __name__ == "__main__":

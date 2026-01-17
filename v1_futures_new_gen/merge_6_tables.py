@@ -75,7 +75,7 @@ class TableMerger:
             'cg_open_interest_aggregated_history': {
                 'prefix': 'oi',
                 'key_cols': ['time', 'symbol', 'interval'],
-                'data_cols': ['open', 'high', 'low', 'close', 'unit'],
+                'data_cols': ['open', 'high', 'low', 'close'],
                 'required': False,
                 'merge_keys': ['time', 'symbol', 'interval']
             }

@@ -8,14 +8,45 @@ echo "========================================"
 
 # Default parameters
 EXCHANGE=${EXCHANGE:-binance}
-PAIR=${PAIR:-BTCUSDT}
+PAIR=${PAIR:-ETHUSDT}
 INTERVAL=${INTERVAL:-1h}
-OUTPUT_DIR=${OUTPUT_DIR:-./output_train_futures_new_gen}
+MODEL_VERSION=${MODEL_VERSION:-}
+OUTPUT_DIR=${OUTPUT_DIR:-}
+
+if [ -z "$MODEL_VERSION" ]; then
+    case "${PAIR^^}" in
+        BTCUSDT)
+            MODEL_VERSION="futures_new_gen_btc"
+            ;;
+        ETHUSDT)
+            MODEL_VERSION="futures_new_gen_eth"
+            ;;
+        *)
+            echo "❌ MODEL_VERSION is required. Example: futures_new_gen_btc or futures_new_gen_eth"
+            exit 1
+            ;;
+    esac
+fi
+
+if [ -z "$OUTPUT_DIR" ]; then
+    case "${PAIR^^}" in
+        BTCUSDT)
+            OUTPUT_DIR="./output_train_futures_new_gen"
+            ;;
+        ETHUSDT)
+            OUTPUT_DIR="./output_train_futures_new_gen_eth"
+            ;;
+        *)
+            OUTPUT_DIR="./output_train_futures_new_gen"
+            ;;
+    esac
+fi
 
 echo "Configuration:"
 echo "  Exchange: $EXCHANGE"
 echo "  Pair: $PAIR"
 echo "  Interval: $INTERVAL"
+echo "  Model Version: $MODEL_VERSION"
 echo "  Output Directory: $OUTPUT_DIR"
 echo ""
 
@@ -31,14 +62,15 @@ run_step() {
 
     echo "=========================================="
     echo "Running $step_name..."
-    echo "Command: python $script $extra_flags --exchange $EXCHANGE --pair $PAIR --interval $INTERVAL --output-dir $OUTPUT_DIR"
+    echo "Command: python $script $extra_flags --exchange $EXCHANGE --pair $PAIR --interval $INTERVAL --output-dir $OUTPUT_DIR --model-version $MODEL_VERSION"
     echo "=========================================="
 
     if python "$script" $extra_flags \
         --exchange "$EXCHANGE" \
         --pair "$PAIR" \
         --interval "$INTERVAL" \
-        --output-dir "$OUTPUT_DIR"; then
+        --output-dir "$OUTPUT_DIR" \
+        --model-version "$MODEL_VERSION"; then
         echo "✅ $step_name completed successfully"
         echo ""
     else

@@ -106,7 +106,7 @@ class DatabaseLoader:
                 'exchange_col': None,
                 'pair_col': 'symbol',
                 'key_columns': ['time', 'symbol', 'interval'],
-                'data_columns': ['open', 'high', 'low', 'close', 'unit'],
+                'data_columns': ['open', 'high', 'low', 'close'],
                 'pair_mode': 'base'
             }
         }
