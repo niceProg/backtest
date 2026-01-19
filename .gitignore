@@ -3,5 +3,6 @@ output_train
 output_train_futures
 output_train_futures_price
 output_train_futures_new_gen
+output_train_futures_new_gen_eth
 backup/*.png
 .backtest
