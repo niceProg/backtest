@@ -7,37 +7,41 @@ echo "XGBoost Futures Pipeline - Manual Run"
 echo "========================================"
 
 # Default parameters
-EXCHANGE=${EXCHANGE:-binance}
-PAIR=${PAIR:-ETHUSDT}
+EXCHANGE=${EXCHANGE:-bybit}
+PAIR=${PAIR:-BTCUSDT}
 INTERVAL=${INTERVAL:-1h}
 MODEL_VERSION=${MODEL_VERSION:-}
 OUTPUT_DIR=${OUTPUT_DIR:-}
 
 if [ -z "$MODEL_VERSION" ]; then
+    exchange_key="${EXCHANGE%%,*}"
+    exchange_key="${exchange_key,,}"
     case "${PAIR^^}" in
         BTCUSDT)
-            MODEL_VERSION="futures_new_gen_btc"
+            MODEL_VERSION="futures_new_gen_btc_${exchange_key}"
             ;;
         ETHUSDT)
-            MODEL_VERSION="futures_new_gen_eth"
+            MODEL_VERSION="futures_new_gen_eth_${exchange_key}"
             ;;
         *)
-            echo "❌ MODEL_VERSION is required. Example: futures_new_gen_btc or futures_new_gen_eth"
+            echo "❌ MODEL_VERSION is required. Example: futures_new_gen_btc_${exchange_key} or futures_new_gen_eth_${exchange_key}"
             exit 1
             ;;
     esac
 fi
 
 if [ -z "$OUTPUT_DIR" ]; then
+    exchange_key="${EXCHANGE%%,*}"
+    exchange_key="${exchange_key,,}"
     case "${PAIR^^}" in
         BTCUSDT)
-            OUTPUT_DIR="./output_train_futures_new_gen"
+            OUTPUT_DIR="./output_train_futures_new_gen_${exchange_key}"
             ;;
         ETHUSDT)
-            OUTPUT_DIR="./output_train_futures_new_gen_eth"
+            OUTPUT_DIR="./output_train_futures_new_gen_eth_${exchange_key}"
             ;;
         *)
-            OUTPUT_DIR="./output_train_futures_new_gen"
+            OUTPUT_DIR="./output_train_futures_new_gen_${exchange_key}"
             ;;
     esac
 fi
