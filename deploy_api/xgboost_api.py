@@ -677,6 +677,37 @@ async def insert_futures_new_gen_eth_model(model_request: ModelInsertRequest):
     """Insert a new futures_new_gen_eth trained model to the database."""
     return insert_model_by_version(model_request, 'futures_new_gen_eth')
 
+# FUTURES NEW GEN BTC ENDPOINTS (/api/v1/futures_new_gen_btc/*)
+@app.get("/api/v1/futures_new_gen_btc/latest/model", response_model=ModelResponse)
+async def get_futures_new_gen_btc_latest_model():
+    """Get latest futures_new_gen_btc trained model with base64 encoding."""
+    return get_latest_model_by_version('futures_new_gen_btc')
+
+@app.get("/api/v1/futures_new_gen_btc/latest/dataset-summary", response_model=DatasetSummaryResponse)
+async def get_futures_new_gen_btc_latest_dataset_summary():
+    """Get latest futures_new_gen_btc dataset summary with base64 encoding."""
+    return get_dataset_summary_by_version('futures_new_gen_btc')
+
+@app.get("/api/v1/futures_new_gen_btc/summary/{summary_id}", response_model=DatasetSummaryResponse)
+async def get_futures_new_gen_btc_summary_by_id(summary_id: int):
+    """Get futures_new_gen_btc dataset summary by specific ID."""
+    return get_summary_by_id_version(summary_id, 'futures_new_gen_btc')
+
+@app.get("/api/v1/futures_new_gen_btc/model/{model_id}", response_model=ModelResponse)
+async def get_futures_new_gen_btc_model_by_id(model_id: int):
+    """Get futures_new_gen_btc model by specific ID."""
+    return get_model_by_id_version(model_id, 'futures_new_gen_btc')
+
+@app.get("/api/v1/futures_new_gen_btc/models", response_model=ModelsResponse)
+async def list_futures_new_gen_btc_models():
+    """List all available futures_new_gen_btc models."""
+    return list_models_by_version('futures_new_gen_btc')
+
+@app.post("/api/v1/futures_new_gen_btc/model", response_model=ModelInsertResponse)
+async def insert_futures_new_gen_btc_model(model_request: ModelInsertRequest):
+    """Insert a new futures_new_gen_btc trained model to the database."""
+    return insert_model_by_version(model_request, 'futures_new_gen_btc')
+
 # FUTURES NEW GEN BTC BYBIT ENDPOINTS (/api/v1/futures_new_gen_btc_bybit/*)
 @app.get("/api/v1/futures_new_gen_btc_bybit/latest/model", response_model=ModelResponse)
 async def get_futures_new_gen_btc_bybit_latest_model():
@@ -806,6 +837,14 @@ if __name__ == "__main__":
     logger.info("   GET /api/v1/futures_new_gen_eth/summary/{summary_id} - Get futures_new_gen_eth dataset summary by ID")
     logger.info("   GET /api/v1/futures_new_gen_eth/models - List all futures_new_gen_eth models")
     logger.info("   POST /api/v1/futures_new_gen_eth/model - Insert new futures_new_gen_eth model")
+    logger.info("")
+    logger.info("   FUTURES NEW GEN BTC Endpoints:")
+    logger.info("   GET /api/v1/futures_new_gen_btc/latest/model - Get latest futures_new_gen_btc model")
+    logger.info("   GET /api/v1/futures_new_gen_btc/latest/dataset-summary - Get latest futures_new_gen_btc dataset summary")
+    logger.info("   GET /api/v1/futures_new_gen_btc/model/{model_id} - Get futures_new_gen_btc model by ID")
+    logger.info("   GET /api/v1/futures_new_gen_btc/summary/{summary_id} - Get futures_new_gen_btc dataset summary by ID")
+    logger.info("   GET /api/v1/futures_new_gen_btc/models - List all futures_new_gen_btc models")
+    logger.info("   POST /api/v1/futures_new_gen_btc/model - Insert new futures_new_gen_btc model")
     logger.info("   GET /api/v1/futures_new_gen_btc_bybit/latest/model - Get latest futures_new_gen_btc_bybit model")
     logger.info("   GET /api/v1/futures_new_gen_btc_bybit/latest/dataset-summary - Get latest futures_new_gen_btc_bybit dataset summary")
     logger.info("   GET /api/v1/futures_new_gen_btc_bybit/model/{model_id} - Get futures_new_gen_btc_bybit model by ID")
