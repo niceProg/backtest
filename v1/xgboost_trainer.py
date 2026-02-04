@@ -155,14 +155,20 @@ class XGBoostTrainer:
         self.best_params = params
         return model
 
-    def evaluate_model(self, model: xgb.XGBClassifier,
-                      X_test: pd.DataFrame, y_test: pd.Series) -> dict:
-        """Evaluate model performance on test set."""
+    def evaluate_model(
+        self,
+        model: xgb.XGBClassifier,
+        X_test: pd.DataFrame,
+        y_test: pd.Series,
+        threshold: float = 0.43,
+    ) -> dict:
+        """Evaluate model performance on test set using a probability threshold."""
         logger.info("Evaluating model performance...")
 
         # Make predictions
         y_pred_proba = model.predict_proba(X_test)[:, 1]
-        y_pred = (y_pred_proba > 0.5).astype(int)
+        y_pred = (y_pred_proba > threshold).astype(int)
+        logger.info(f"Using prediction threshold: {threshold:.2f}")
 
         # Calculate metrics
         metrics = {

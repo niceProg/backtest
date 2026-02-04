@@ -96,6 +96,19 @@ Examples:
         help='Model version label for database/storage separation (required)'
     )
 
+    # XGBoost training configuration
+    parser.add_argument(
+        '--xgb-preset',
+        type=str,
+        default='default',
+        help='XGBoost parameter preset (default: default). Example: binance_20260120'
+    )
+    parser.add_argument(
+        '--skip-tuning',
+        action='store_true',
+        help='Skip hyperparameter tuning and use preset/default parameters'
+    )
+
     parser.add_argument(
         '--verbose',
         action='store_true',

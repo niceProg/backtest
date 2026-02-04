@@ -7,7 +7,7 @@ echo "XGBoost Futures Pipeline - Manual Run"
 echo "========================================"
 
 # Default parameters
-EXCHANGE=${EXCHANGE:-bybit}
+EXCHANGE=${EXCHANGE:-Bybit}
 PAIR=${PAIR:-BTCUSDT}
 INTERVAL=${INTERVAL:-1h}
 MODEL_VERSION=${MODEL_VERSION:-}
@@ -86,6 +86,7 @@ run_step() {
 
 # Parse extra flags (optional: --days N, --time start,end)
 EXTRA_FLAGS=""
+XGB_FLAGS=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --days)
@@ -95,6 +96,14 @@ while [[ $# -gt 0 ]]; do
         --time)
             EXTRA_FLAGS="$EXTRA_FLAGS --time $2"
             shift 2
+            ;;
+        --xgb-preset)
+            XGB_FLAGS="$XGB_FLAGS --xgb-preset $2"
+            shift 2
+            ;;
+        --skip-tuning)
+            XGB_FLAGS="$XGB_FLAGS --skip-tuning"
+            shift
             ;;
         *)
             shift
@@ -107,7 +116,7 @@ run_step "load_database.py" "Step 1: Load Database" $EXTRA_FLAGS
 run_step "merge_6_tables.py" "Step 2: Merge Tables" $EXTRA_FLAGS
 run_step "feature_engineering.py" "Step 3: Feature Engineering" $EXTRA_FLAGS
 run_step "label_builder.py" "Step 4: Label Building" $EXTRA_FLAGS
-run_step "xgboost_trainer.py" "Step 5: Model Training" $EXTRA_FLAGS
+run_step "xgboost_trainer.py" "Step 5: Model Training" $EXTRA_FLAGS $XGB_FLAGS
 
 
 echo "=========================================="

@@ -30,6 +30,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Default decision threshold for converting probabilities to class labels.
+DEFAULT_DECISION_THRESHOLD = 0.43
+
 class XGBoostTrainer:
     """Train XGBoost model for trend prediction."""
 
@@ -144,10 +147,10 @@ class XGBoostTrainer:
         return {
             'objective': 'binary:logistic',
             'eval_metric': ['logloss', 'auc'],
-            'learning_rate': 0.05,
+            'learning_rate': 0.1,
             'max_depth': 6,
             'min_child_weight': 1,
-            'subsample': 0.8,
+            'subsample': 1.0,
             'colsample_bytree': 0.8,
             'colsample_bylevel': 0.8,
             'alpha': 0.1,  # L1 regularization
@@ -158,6 +161,32 @@ class XGBoostTrainer:
             'early_stopping_rounds': 10,
             'verbosity': 1
         }
+
+    def get_preset_params(self, preset: str) -> dict:
+        """Return parameter presets for reproducible training."""
+        key = (preset or "").strip().lower()
+        if key in ("", "default"):
+            return self.get_default_xgboost_params()
+        if key in ("binance_20260120", "binance_20260120_181047", "binance_good", "binance"):
+            params = self.get_default_xgboost_params()
+            params.update({
+                'learning_rate': 0.05,
+                'max_depth': 5,
+                'min_child_weight': 1,
+                'subsample': 0.8,
+                'colsample_bytree': 0.8,
+                'colsample_bylevel': 0.8
+            })
+            return params
+        if key in ("eth_binance_20260116", "eth_binance", "eth_20260116"):
+            params = self.get_default_xgboost_params()
+            params.update({
+                'min_child_weight': 5
+            })
+            return params
+
+        logger.warning(f"Unknown preset '{preset}', falling back to default params.")
+        return self.get_default_xgboost_params()
 
     def train_model(self, X_train: pd.DataFrame, y_train: pd.Series,
                    X_val: pd.DataFrame, y_val: pd.Series,
@@ -204,7 +233,8 @@ class XGBoostTrainer:
 
         # Make predictions
         y_pred_proba = model.predict_proba(X_test)[:, 1]
-        y_pred = (y_pred_proba > 0.5).astype(int)
+        y_pred = (y_pred_proba >= DEFAULT_DECISION_THRESHOLD).astype(int)
+        logger.info(f"Using decision threshold: {DEFAULT_DECISION_THRESHOLD:.2f}")
 
         # Calculate metrics
         metrics = {
@@ -215,16 +245,11 @@ class XGBoostTrainer:
             'roc_auc': roc_auc_score(y_test, y_pred_proba)
         }
 
-        # Log metrics
-        logger.info("Test Set Performance:")
-        for metric, value in metrics.items():
-            logger.info(f"  {metric}: {value:.4f}")
-
         # Threshold calibration (favor precision with minimum recall)
         best_precision = -1
-        best_precision_threshold = 0.5
+        best_precision_threshold = DEFAULT_DECISION_THRESHOLD
         best_f1 = -1
-        best_f1_threshold = 0.5
+        best_f1_threshold = DEFAULT_DECISION_THRESHOLD
         for th in [i / 100 for i in range(40, 71)]:
             pred = (y_pred_proba >= th).astype(int)
             try:
@@ -246,6 +271,11 @@ class XGBoostTrainer:
         metrics['best_precision'] = best_precision
         metrics['best_f1_threshold'] = best_f1_threshold
         metrics['best_f1'] = best_f1
+
+        # Log metrics
+        logger.info("Test Set Performance:")
+        for metric, value in metrics.items():
+            logger.info(f"  {metric}: {value:.4f}")
 
         logger.info(f"Best precision threshold (recall>=0.55): {best_precision_threshold:.2f} (prec={best_precision:.4f})")
         logger.info(f"Best F1 threshold: {best_f1_threshold:.2f} (f1={best_f1:.4f})")
@@ -437,11 +467,15 @@ class XGBoostTrainer:
         logger.info("❌ Training session update disabled per client requirement")
 
     def hyperparameter_tuning(self, X_train: pd.DataFrame, y_train: pd.Series,
-                            X_val: pd.DataFrame, y_val: pd.Series) -> dict:
+                            X_val: pd.DataFrame, y_val: pd.Series,
+                            base_params: dict = None) -> dict:
         """Basic hyperparameter tuning."""
         logger.info("Performing hyperparameter tuning...")
 
-        base_params = self.get_default_xgboost_params()
+        base_params = base_params.copy() if base_params is not None else self.get_default_xgboost_params()
+        logger.info("Hyperparameter tuning disabled; using base params.")
+        return base_params
+
         best_auc = 0
         best_params = base_params.copy()
 
@@ -514,9 +548,21 @@ def main():
         # Prepare data splits
         X_train, X_val, X_test, y_train, y_val, y_test = trainer.prepare_data_splits(X, y)
 
-        # Hyperparameter tuning (optional - can be skipped for speed)
-        logger.info("Performing hyperparameter tuning...")
-        best_params = trainer.hyperparameter_tuning(X_train, y_train, X_val, y_val)
+        # Parameter preset (e.g., binance_20260120) + optional tuning
+        preset = args.xgb_preset
+        if (preset or "").strip().lower() in ("", "default"):
+            if "bybit" in str(args.model_version or "").lower():
+                preset = "eth_binance_20260116"
+                logger.info("Auto-select preset for Bybit: eth_binance_20260116 (match ETH Binance params)")
+        base_params = trainer.get_preset_params(preset)
+        logger.info(f"Using XGBoost preset: {preset}")
+
+        if args.skip_tuning:
+            logger.info("Skipping hyperparameter tuning; using preset/base params.")
+            best_params = base_params
+        else:
+            logger.info("Performing hyperparameter tuning...")
+            best_params = trainer.hyperparameter_tuning(X_train, y_train, X_val, y_val, base_params=base_params)
 
         # Train final model
         logger.info("Training final model...")
@@ -529,7 +575,7 @@ def main():
         feature_importance = trainer.feature_importance_analysis(model)
 
         # Cross validation
-        cv_results = trainer.cross_validation(X, y)
+        cv_results = trainer.cross_validation(X, y, params=best_params)
 
         # Save everything
         trainer.save_model_and_results(model, metrics, cv_results, feature_importance)

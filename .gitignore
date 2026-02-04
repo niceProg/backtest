@@ -4,5 +4,8 @@ output_train_futures
 output_train_futures_price
 output_train_futures_new_gen
 output_train_futures_new_gen_eth
+output_train_futures_new_gen_eth_bybit
+output_train_futures_new_gen_bybit
+output_train_futures_new_gen_binance
 backup/*.png
 .backtest

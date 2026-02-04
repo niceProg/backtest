@@ -8,6 +8,7 @@ import joblib
 import base64
 from io import BytesIO
 import hashlib
+import math
 import json
 from datetime import datetime, timedelta
 
@@ -42,7 +43,7 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
     def Initialize(self):
         # ===== Training date range from dataset_summary (SERVER) =====
         # Legacy ObjectStore keys (unused - ObjectStore model/dataset loading removed)
-        self.objectstore_prefix = "yumna"
+        self.objectstore_prefix = "yumna_btc_binance"
         self.model_key = f"{self.objectstore_prefix}/latest_model.joblib"
         self.dataset_summary_key = f"{self.objectstore_prefix}/dataset_summary.txt"
 
@@ -62,8 +63,8 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         }
 
         # Endpoints (JSON, with base64 fields)
-        self.model_api_url = f"{self.domain}/api/{self.model_version}/futures_new_gen/latest/model"
-        self.dataset_summary_api_url = f"{self.domain}/api/{self.model_version}/futures_new_gen/latest/dataset-summary"
+        self.model_api_url = f"{self.domain}/api/{self.model_version}/futures_new_gen_btc/latest/model"
+        self.dataset_summary_api_url = f"{self.domain}/api/{self.model_version}/futures_new_gen_btc/latest/dataset-summary"
 
         self.train_start_date = None
         self.train_end_date = None
@@ -96,7 +97,7 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
             except Exception as e2:
                 self.Debug(f"[CASH] SetAccountCurrency(USD) failed: {e2}")
 
-        cash_amount = 10000
+        cash_amount = 100
         try:
             self.SetCash(cash_amount)
             self.Debug(f"[CASH] SetCash({cash_amount}) applied")
@@ -219,8 +220,8 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         self.pred_smooth_n = 1   # moving average window for prediction smoothing
         self.pred_history = deque(maxlen=self.pred_smooth_n)
 
-        self.stop_loss_pct = 0.04
-        self.take_profit_pct = 0.34
+        self.stop_loss_pct = 0.025
+        self.take_profit_pct = 0.30
         self.pred_exit_confirm_bars = 1
         self.pred_exit_below_count = 0
         self.pred_exit_above_count = 0
@@ -1162,6 +1163,18 @@ class XGBoostTradingAlgorithm(QCAlgorithm):
         ind_ready = False
         long_ok = True
         short_ok = True
+
+        # Minimum notional guard ($100) -> raise min_order_quantity
+        try:
+            pricex = float(self.Securities[self.symbol].Price)
+            lotx = float(self.Securities[self.symbol].SymbolProperties.LotSize)
+            if lotx > 0 and pricex > 0:
+                min_notional = 100.0
+                min_qty = math.ceil((min_notional / pricex) / lotx) * lotx
+                if min_qty > self.min_order_quantity:
+                    self.min_order_quantity = min_qty
+        except Exception:
+            pass
 
         if qty > 0 and pred >= self.current_sell_threshold:
             self.pred_exit_below_count = 0
