@@ -542,6 +542,40 @@ async def insert_spot_model(model_request: ModelInsertRequest):
     return insert_model_by_version(model_request, 'spot')
 
 # =========================================================
+# SPOT BTC BINANCE ENDPOINTS (/api/v1/spot_btc_binance/*)
+# =========================================================
+
+@app.get("/api/v1/spot_btc_binance/latest/model", response_model=ModelResponse)
+async def get_spot_btc_binance_latest_model():
+    """Get latest spot_btc_binance trained model with base64 encoding."""
+    return get_latest_model_by_version('spot_btc_binance')
+
+@app.get("/api/v1/spot_btc_binance/latest/dataset-summary", response_model=DatasetSummaryResponse)
+async def get_spot_btc_binance_latest_dataset_summary():
+    """Get latest spot_btc_binance dataset summary with base64 encoding."""
+    return get_dataset_summary_by_version('spot_btc_binance')
+
+@app.get("/api/v1/spot_btc_binance/summary/{summary_id}", response_model=DatasetSummaryResponse)
+async def get_spot_btc_binance_summary_by_id(summary_id: int):
+    """Get spot_btc_binance dataset summary by specific ID."""
+    return get_summary_by_id_version(summary_id, 'spot_btc_binance')
+
+@app.get("/api/v1/spot_btc_binance/model/{model_id}", response_model=ModelResponse)
+async def get_spot_btc_binance_model_by_id(model_id: int):
+    """Get spot_btc_binance model by specific ID."""
+    return get_model_by_id_version(model_id, 'spot_btc_binance')
+
+@app.get("/api/v1/spot_btc_binance/models", response_model=ModelsResponse)
+async def list_spot_btc_binance_models():
+    """List all available spot_btc_binance models."""
+    return list_models_by_version('spot_btc_binance')
+
+@app.post("/api/v1/spot_btc_binance/model", response_model=ModelInsertResponse)
+async def insert_spot_btc_binance_model(model_request: ModelInsertRequest):
+    """Insert a new spot_btc_binance trained model to the database."""
+    return insert_model_by_version(model_request, 'spot_btc_binance')
+
+# =========================================================
 # FUTURES ENDPOINTS (/api/v1/futures/*)
 # =========================================================
 

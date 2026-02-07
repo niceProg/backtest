@@ -1,0 +1,16 @@
+Column Mapping:
+====================
+agg_taker_aggregated_buy_volume_usd
+agg_taker_aggregated_sell_volume_usd
+exchange
+interval
+price_close
+price_high
+price_low
+price_open
+price_volume_usd
+symbol
+taker_aggregated_buy_volume_usd
+taker_aggregated_sell_volume_usd
+time
+unit

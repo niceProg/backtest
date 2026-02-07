@@ -1,0 +1,6 @@
+{
+  "best_precision_threshold": 0.48,
+  "best_precision": 0.44623655913978494,
+  "best_f1_threshold": 0.41,
+  "best_f1": 0.601589103291714
+}

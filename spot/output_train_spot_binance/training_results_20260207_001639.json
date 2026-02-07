@@ -1,0 +1,66 @@
+{
+  "model_name": "xgboost_trading_model_20260207_001639.joblib",
+  "timestamp": "20260207_001639",
+  "parameters": {
+    "objective": "binary:logistic",
+    "eval_metric": [
+      "logloss",
+      "auc"
+    ],
+    "learning_rate": 0.1,
+    "max_depth": 6,
+    "min_child_weight": 1,
+    "subsample": 1.0,
+    "colsample_bytree": 0.8,
+    "colsample_bylevel": 0.8,
+    "alpha": 0.1,
+    "lambda": 1.5,
+    "gamma": 0.1,
+    "random_state": 42,
+    "n_estimators": 300,
+    "early_stopping_rounds": 10,
+    "verbosity": 1
+  },
+  "metrics": {
+    "accuracy": 0.46130268199233715,
+    "precision": 0.4425531914893617,
+    "recall": 0.9154929577464789,
+    "f1": 0.5966724039013196,
+    "roc_auc": 0.5209057943317981,
+    "best_precision_threshold": 0.48,
+    "best_precision": 0.44623655913978494,
+    "best_f1_threshold": 0.41,
+    "best_f1": 0.601589103291714
+  },
+  "cross_validation": {
+    "mean_auc": 0.511942876301591,
+    "std_auc": 0.027110185199846176,
+    "cv_scores": [
+      0.4986179361179361,
+      0.5306418387813736,
+      0.5345685424896458,
+      0.46444905177144946,
+      0.5314370123475494
+    ]
+  },
+  "feature_count": 42,
+  "sample_count": 6525,
+  "split_info": {
+    "train_end_idx": 4176,
+    "val_end_idx": 5220,
+    "test_size": 0.2,
+    "validation_size": 0.2,
+    "train_time_range": [
+      "2024-01-03 18:00:00",
+      "2025-06-11 01:00:00"
+    ],
+    "val_time_range": [
+      "2025-06-11 02:00:00",
+      "2025-10-20 23:00:00"
+    ],
+    "test_time_range": [
+      "2025-10-21 00:00:00",
+      "2026-02-06 07:00:00"
+    ]
+  }
+}

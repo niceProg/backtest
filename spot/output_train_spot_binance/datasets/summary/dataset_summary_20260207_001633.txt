@@ -1,0 +1,71 @@
+Dataset Summary
+====================
+
+Training Session Info:
+- Timestamp: 2026-02-07 00:16:33 WIB
+- Exchange: Binance
+- Pair: BTCUSDT
+- Interval: 1h
+- Label Horizon: 10 bars
+- Label Threshold: 0.0025
+- Regime Filter: ATR q=0.6 (window=20)
+
+Dataset Statistics:
+- Total samples: 6,525
+- Features: 42
+- Label distribution:
+  * Bullish (1): 3,317.0 (50.8%)
+  * Bearish (0): 3,208.0 (49.2%)
+
+Time Range:
+- Start: 2024-01-03 18:00:00 (2024-01-04 01:00:00 WIB)
+- End: 2026-02-06 07:00:00 (2026-02-06 14:00:00 WIB)
+
+Data Sources:
+- Exchanges: ['Binance']
+- Symbols: ['BTC']
+- Intervals: ['1h']
+
+Feature Columns:
+- agg_taker_aggregated_buy_volume_usd
+- agg_taker_aggregated_sell_volume_usd
+- agg_taker_buy_mean_12
+- agg_taker_buy_ratio
+- agg_taker_buy_std_12
+- agg_taker_buy_zscore
+- agg_taker_imbalance
+- agg_taker_sell_mean_12
+- agg_taker_sell_std_12
+- agg_taker_sell_zscore
+- cross_agg_taker_imbalance_price
+- cross_agg_taker_price
+- cross_taker_imbalance_price
+- cross_taker_price
+- price_body_size
+- price_close
+- price_close_mean_5
+- price_close_return_1
+- price_close_return_5
+- price_close_std_5
+- price_high
+- price_log_return
+- price_low
+- price_open
+- price_rolling_vol_5
+- price_true_range
+- price_volume_change
+- price_volume_mean_10
+- price_volume_usd
+- price_volume_zscore
+- price_wick_lower
+- price_wick_upper
+- taker_aggregated_buy_volume_usd
+- taker_aggregated_sell_volume_usd
+- taker_buy_mean_12
+- taker_buy_ratio
+- taker_buy_std_12
+- taker_buy_zscore
+- taker_imbalance
+- taker_sell_mean_12
+- taker_sell_std_12
+- taker_sell_zscore

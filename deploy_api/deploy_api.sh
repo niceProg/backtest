@@ -93,6 +93,8 @@ if docker ps | grep -q "xgboost-api"; then
     echo "   Health Check: https://api.dragonfortune.ai/health"
     echo "   Spot - Latest Model: https://api.dragonfortune.ai/api/v1/spot/latest/model"
     echo "   Spot - Latest Summary: https://api.dragonfortune.ai/api/v1/spot/latest/dataset-summary"
+    echo "   Spot BTC Binance - Latest Model: https://api.dragonfortune.ai/api/v1/spot_btc_binance/latest/model"
+    echo "   Spot BTC Binance - Latest Summary: https://api.dragonfortune.ai/api/v1/spot_btc_binance/latest/dataset-summary"
     echo "   Spot - List Sessions: https://api.dragonfortune.ai/api/v1/spot/sessions"
     echo "   Futures - Latest Model: https://api.dragonfortune.ai/api/v1/futures/latest/model"
     echo "   Futures - Latest Summary: https://api.dragonfortune.ai/api/v1/futures/latest/dataset-summary"
